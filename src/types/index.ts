@@ -1,6 +1,7 @@
 /** 商品记录 */
 export interface CommodityRecord {
   id?: number;
+  category: string;
   name: string;
   seller: string;
   price: number;
@@ -21,6 +22,7 @@ export interface Server {
 
 /** 均价统计 */
 export interface AveragePrice {
+  category: string;
   name: string;
   server: string;
   avgPrice: number;
@@ -36,14 +38,9 @@ export interface AppSettings {
   ocrProvider: 'local' | 'baidu';
   baiduApiKey: string;
   baiduSecretKey: string;
-  llmProvider: 'qwen' | 'deepseek';
-  llmApiKey: string;
   shortcut: string;
   currentServer: string;
   currentGame: string;
-  supabaseUrl: string;
-  supabaseKey: string;
-  autoUpload: boolean;
 }
 
 /** OCR 识别结果 */
@@ -52,19 +49,25 @@ export interface OcrResult {
   items: ParsedCommodity[];
 }
 
-/** 大模型解析后的商品 */
+/** 固定规则解析后的商品 */
 export interface ParsedCommodity {
+  category: string;
   name: string;
   seller: string;
   price: number;
   quantity: number;
 }
 
-/** Supabase 上报数据 */
-export interface UploadRecord {
-  name: string;
-  server: string;
-  avg_price: number;
-  sample_count: number;
-  date: string;
+/** Tauri 框选完成后返回的截图 */
+export interface ScreenshotResult {
+  path: string;
+  base64: string;
+  timestamp: string;
+}
+
+/** Tauri 全局快捷键事件 */
+export interface CaptureEvent {
+  status: string;
+  message: string;
+  path?: string | null;
 }

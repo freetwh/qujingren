@@ -21,7 +21,7 @@ interface TableProps<T> {
   rowClassName?: (row: T, index: number) => string;
 }
 
-export function DataTable<T extends Record<string, unknown>>({
+export function DataTable<T>({
   columns,
   data,
   loading = false,
@@ -102,8 +102,8 @@ export function DataTable<T extends Record<string, unknown>>({
                       className={`px-4 py-3 text-sm text-text-primary ${col.className || ''}`}
                     >
                       {col.render
-                        ? col.render(row[col.key], row, index)
-                        : String(row[col.key] ?? '-')}
+                        ? col.render(row[col.key as keyof T], row, index)
+                        : String(row[col.key as keyof T] ?? '-')}
                     </td>
                   ))}
                 </tr>

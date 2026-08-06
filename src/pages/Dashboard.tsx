@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Search, TrendingUp, TrendingDown, Minus, Package, Database, Upload } from 'lucide-react';
+import { Search, Package, Database, HardDrive } from 'lucide-react';
 import {
   LineChart,
   Line,
@@ -12,16 +12,29 @@ import {
 } from 'recharts';
 import { DataTable, type Column } from '../components/ui/Table';
 import { Card } from '../components/ui/Card';
-import { getAllCommodityNames, getRecordsByName, getRecordsByDateRange } from '../db';
+import {
+  getAllRecords,
+  getRecordsByCategoryAndName,
+  getRecordsByDateRange,
+} from '../db';
 import { calculateServerAverages } from '../services/statistics';
-import { getSettings } from '../services/settings';
-import type { CommodityRecord, AveragePrice } from '../types';
+import { toLocalDateString } from '../services/date';
+import type { AveragePrice, CommodityRecord } from '../types';
 
 const COLORS = ['#7C3AED', '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#EC4899', '#8B5CF6'];
 
+const priceFormatter = new Intl.NumberFormat('zh-CN', {
+  maximumFractionDigits: 2,
+});
+
+interface SelectedCommodity {
+  category: string;
+  name: string;
+}
+
 export function Dashboard() {
-  const [commodities, setCommodities] = useState<string[]>([]);
-  const [selectedCommodity, setSelectedCommodity] = useState<string | null>(null);
+  const [records, setRecords] = useState<CommodityRecord[]>([]);
+  const [selectedCommodity, setSelectedCommodity] = useState<SelectedCommodity | null>(null);
   const [serverAverages, setServerAverages] = useState<AveragePrice[]>([]);
   const [trendData, setTrendData] = useState<Record<string, unknown>[]>([]);
   const [trendServers, setTrendServers] = useState<string[]>([]);
@@ -31,62 +44,68 @@ export function Dashboard() {
   const [sortKey, setSortKey] = useState<string>('');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
-  const settings = getSettings();
-
-  // 加载商品列表
-  const loadCommodities = useCallback(async () => {
+  const loadRecords = useCallback(async () => {
     setLoading(true);
-    const names = await getAllCommodityNames();
-    setCommodities(names);
-    const today = new Date().toISOString().split('T')[0];
-    const records = await getRecordsByDateRange(today, today);
-    setTotalRecords(records.length);
+    const today = toLocalDateString();
+    const [allRecords, todayRecords] = await Promise.all([
+      getAllRecords(),
+      getRecordsByDateRange(today, today),
+    ]);
+    setRecords(allRecords);
+    setTotalRecords(todayRecords.length);
     setLoading(false);
   }, []);
 
   useEffect(() => {
-    loadCommodities();
-  }, [loadCommodities]);
+    loadRecords();
+  }, [loadRecords]);
 
-  // 选择商品查看详情
-  const handleSelectCommodity = useCallback(async (name: string) => {
-    setSelectedCommodity(name);
-    const records = await getRecordsByName(name);
-    const avgs = calculateServerAverages(records, name);
-    setServerAverages(avgs);
+  const commodityCount = useMemo(
+    () => new Set(records.map((record) => `${record.category}\u0000${record.name}`)).size,
+    [records]
+  );
 
-    // 构建趋势图数据（最近30天）
-    const servers = [...new Set(records.map((r) => r.server))];
+  const handleSelectCommodity = useCallback(async (record: CommodityRecord) => {
+    const selection = { category: record.category, name: record.name };
+    setSelectedCommodity(selection);
+
+    const commodityRecords = await getRecordsByCategoryAndName(
+      selection.category,
+      selection.name
+    );
+    setServerAverages(
+      calculateServerAverages(commodityRecords, selection.category, selection.name)
+    );
+
+    const servers = [...new Set(commodityRecords.map((item) => item.server))];
     setTrendServers(servers);
 
-    const dateMap = new Map<string, Record<string, number>>();
+    const dateMap = new Map<string, Record<string, unknown>>();
     const now = new Date();
-    for (let i = 29; i >= 0; i--) {
-      const d = new Date(now);
-      d.setDate(d.getDate() - i);
-      const dateStr = d.toISOString().split('T')[0];
-      dateMap.set(dateStr, { date: dateStr.slice(5) });
+    for (let dayOffset = 29; dayOffset >= 0; dayOffset -= 1) {
+      const date = new Date(now);
+      date.setDate(date.getDate() - dayOffset);
+      const dateString = toLocalDateString(date);
+      dateMap.set(dateString, { date: dateString.slice(5) });
     }
 
-    for (const record of records) {
-      const entry = dateMap.get(record.date);
-      if (entry) {
-        const key = record.server;
-        if (!entry[key]) {
-          entry[key] = 0;
-          entry[`${key}_count`] = 0;
-        }
-        entry[key] += record.price;
-        entry[`${key}_count`] += 1;
-      }
+    for (const item of commodityRecords) {
+      const entry = dateMap.get(item.date);
+      if (!entry) continue;
+
+      const server = item.server;
+      entry[server] = (typeof entry[server] === 'number' ? entry[server] : 0) + item.price;
+      const countKey = `${server}_count`;
+      entry[countKey] =
+        (typeof entry[countKey] === 'number' ? entry[countKey] : 0) + 1;
     }
 
     const chartData = Array.from(dateMap.values()).map((entry) => {
       const result: Record<string, unknown> = { date: entry.date };
       for (const server of servers) {
-        const total = entry[server] as number | undefined;
-        const count = entry[`${server}_count`] as number | undefined;
-        if (total && count) {
+        const total = entry[server];
+        const count = entry[`${server}_count`];
+        if (typeof total === 'number' && typeof count === 'number' && count > 0) {
           result[server] = Math.round((total / count) * 100) / 100;
         }
       }
@@ -96,30 +115,52 @@ export function Dashboard() {
     setTrendData(chartData);
   }, []);
 
-  // 过滤商品列表
-  const filteredCommodities = useMemo(() => {
-    if (!searchQuery) return commodities;
-    return commodities.filter((name) =>
-      name.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-  }, [commodities, searchQuery]);
+  const filteredRecords = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return records;
 
-  // 商品列表表格列
-  const commodityColumns: Column<{ name: string }>[] = useMemo(
+    return records.filter((record) =>
+      [record.category, record.name, record.server, record.date].some((value) =>
+        value.toLowerCase().includes(query)
+      )
+    );
+  }, [records, searchQuery]);
+
+  const commodityColumns: Column<CommodityRecord>[] = useMemo(
     () => [
       {
+        key: 'category',
+        title: '分类',
+        render: (value) => (
+          <span className="text-text-secondary">{String(value)}</span>
+        ),
+      },
+      {
         key: 'name',
-        title: '商品名称',
-        sortable: true,
+        title: '名称',
         render: (value) => (
           <span className="font-medium text-primary-400">{String(value)}</span>
         ),
+      },
+      {
+        key: 'server',
+        title: '区服',
+      },
+      {
+        key: 'price',
+        title: '价格（游戏币）',
+        render: (value) => (
+          <span className="font-mono">{priceFormatter.format(Number(value))}</span>
+        ),
+      },
+      {
+        key: 'date',
+        title: '日期',
       },
     ],
     []
   );
 
-  // 各服均价表格列
   const avgColumns: Column<AveragePrice>[] = useMemo(
     () => [
       {
@@ -131,50 +172,33 @@ export function Dashboard() {
       },
       {
         key: 'avgPrice',
-        title: '均价 (万两)',
+        title: '均价（游戏币）',
         sortable: true,
-        render: (value) => {
-          const num = Number(value);
-          return (
-            <span className="font-mono font-bold text-primary-400">
-              {num.toFixed(2)}
-            </span>
-          );
-        },
+        render: (value) => (
+          <span className="font-mono font-bold text-primary-400">
+            {priceFormatter.format(Number(value))}
+          </span>
+        ),
       },
       {
         key: 'minPrice',
         title: '最低价',
         render: (value) => (
-          <span className="text-success">{Number(value).toFixed(2)}</span>
+          <span className="text-success">{priceFormatter.format(Number(value))}</span>
         ),
       },
       {
         key: 'maxPrice',
         title: '最高价',
         render: (value) => (
-          <span className="text-danger">{Number(value).toFixed(2)}</span>
+          <span className="text-danger">{priceFormatter.format(Number(value))}</span>
         ),
       },
       {
         key: 'sampleCount',
         title: '样本数',
         sortable: true,
-        render: (value) => (
-          <span className="text-text-secondary">{String(value)}</span>
-        ),
-      },
-      {
-        key: 'outlierCount',
-        title: '异常剔除',
-        render: (value) => {
-          const num = Number(value);
-          return num > 0 ? (
-            <span className="text-warning text-xs">{num} 条</span>
-          ) : (
-            <span className="text-text-muted text-xs">无</span>
-          );
-        },
+        render: (value) => <span className="text-text-secondary">{String(value)}</span>,
       },
     ],
     []
@@ -191,26 +215,29 @@ export function Dashboard() {
 
   const sortedAverages = useMemo(() => {
     if (!sortKey) return serverAverages;
-    return [...serverAverages].sort((a, b) => {
-      const aVal = a[sortKey as keyof AveragePrice];
-      const bVal = b[sortKey as keyof AveragePrice];
-      if (typeof aVal === 'number' && typeof bVal === 'number') {
-        return sortOrder === 'asc' ? aVal - bVal : bVal - aVal;
+    return [...serverAverages].sort((left, right) => {
+      const leftValue = left[sortKey as keyof AveragePrice];
+      const rightValue = right[sortKey as keyof AveragePrice];
+      if (typeof leftValue === 'number' && typeof rightValue === 'number') {
+        return sortOrder === 'asc' ? leftValue - rightValue : rightValue - leftValue;
       }
       return 0;
     });
   }, [serverAverages, sortKey, sortOrder]);
 
+  const selectedLabel = selectedCommodity
+    ? `${selectedCommodity.category} / ${selectedCommodity.name}`
+    : '';
+
   return (
     <div className="space-y-6">
-      {/* 统计卡片 */}
       <div className="grid grid-cols-3 gap-4">
         <Card className="text-center">
           <div className="flex items-center justify-center gap-2 mb-2">
             <Package size={18} className="text-primary-400" />
-            <span className="text-sm text-text-secondary">商品种类</span>
+            <span className="text-sm text-text-secondary">商品名称</span>
           </div>
-          <div className="text-2xl font-bold text-text-primary">{commodities.length}</div>
+          <div className="text-2xl font-bold text-text-primary">{commodityCount}</div>
         </Card>
         <Card className="text-center">
           <div className="flex items-center justify-center gap-2 mb-2">
@@ -221,16 +248,13 @@ export function Dashboard() {
         </Card>
         <Card className="text-center">
           <div className="flex items-center justify-center gap-2 mb-2">
-            <Upload size={18} className="text-success" />
-            <span className="text-sm text-text-secondary">自动上报</span>
+            <HardDrive size={18} className="text-success" />
+            <span className="text-sm text-text-secondary">存储方式</span>
           </div>
-          <div className="text-2xl font-bold text-text-primary">
-            {settings.autoUpload ? '开启' : '关闭'}
-          </div>
+          <div className="text-2xl font-bold text-text-primary">仅本地</div>
         </Card>
       </div>
 
-      {/* 商品列表 */}
       <Card title="商品列表" className="min-h-[200px]">
         <div className="mb-4">
           <div className="relative">
@@ -240,8 +264,8 @@ export function Dashboard() {
             />
             <input
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="搜索商品名称..."
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="搜索分类、名称、区服或日期..."
               className="w-full pl-9 pr-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-text-primary placeholder-text-muted outline-none focus:border-primary-500 transition-colors"
             />
           </div>
@@ -249,20 +273,22 @@ export function Dashboard() {
 
         <DataTable
           columns={commodityColumns}
-          data={filteredCommodities.map((name) => ({ name }))}
+          data={filteredRecords}
           loading={loading}
           emptyText="暂无商品数据，请先截图采集"
-          onRowClick={(row) => handleSelectCommodity(row.name)}
-          rowClassName={(row) =>
-            row.name === selectedCommodity ? 'bg-primary-600/10' : ''
+          onRowClick={handleSelectCommodity}
+          rowClassName={(record) =>
+            record.category === selectedCommodity?.category &&
+            record.name === selectedCommodity?.name
+              ? 'bg-primary-600/10'
+              : ''
           }
         />
       </Card>
 
-      {/* 选中商品的各服均价 */}
       {selectedCommodity && (
         <Card
-          title={`「${selectedCommodity}」各服均价对比`}
+          title={`「${selectedLabel}」各服均价对比（游戏币）`}
           action={
             <span className="text-xs text-text-muted">
               共 {serverAverages.length} 个区服
@@ -280,9 +306,8 @@ export function Dashboard() {
         </Card>
       )}
 
-      {/* 价格趋势图 */}
       {selectedCommodity && trendData.length > 0 && (
-        <Card title={`「${selectedCommodity}」30天价格趋势`}>
+        <Card title={`「${selectedLabel}」30天价格趋势`}>
           <div className="h-80">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={trendData}>
@@ -296,7 +321,7 @@ export function Dashboard() {
                   stroke="#6B6B80"
                   tick={{ fill: '#A0A0B8', fontSize: 12 }}
                   label={{
-                    value: '价格 (万两)',
+                    value: '价格（游戏币）',
                     angle: -90,
                     position: 'insideLeft',
                     fill: '#A0A0B8',
@@ -312,12 +337,12 @@ export function Dashboard() {
                   }}
                 />
                 <Legend />
-                {trendServers.map((server, i) => (
+                {trendServers.map((server, index) => (
                   <Line
                     key={server}
                     type="monotone"
                     dataKey={server}
-                    stroke={COLORS[i % COLORS.length]}
+                    stroke={COLORS[index % COLORS.length]}
                     strokeWidth={2}
                     dot={{ r: 3 }}
                     activeDot={{ r: 5 }}

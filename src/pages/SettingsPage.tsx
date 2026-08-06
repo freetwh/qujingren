@@ -1,8 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
-  Key,
-  Cloud,
   Download,
   Trash2,
   Keyboard,
@@ -13,20 +11,25 @@ import {
   EyeOff,
 } from 'lucide-react';
 import { Card } from '../components/ui/Card';
+import { hasEnvironmentValue } from '../services/env';
 import { getSettings, saveSettings } from '../services/settings';
-import { testConnection } from '../services/supabase';
 import { clearAllData, exportAllData } from '../db';
 import type { AppSettings } from '../types';
 
 export function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings>(getSettings());
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
-  const [testResult, setTestResult] = useState<string>('');
-  const [testing, setTesting] = useState(false);
   const [screenshotDir, setScreenshotDir] = useState<string>('');
   const [logDir, setLogDir] = useState<string>('');
   const [copiedKey, setCopiedKey] = useState<string>('');
   const [openDirMsg, setOpenDirMsg] = useState<string>('');
+
+  const envOcrProvider = hasEnvironmentValue('VITE_OCR_PROVIDER');
+  const envBaiduApiKey =
+    hasEnvironmentValue('VITE_BAIDU_OCR_API_KEY') || hasEnvironmentValue('VITE_BAIDU_API_KEY');
+  const envBaiduSecretKey =
+    hasEnvironmentValue('VITE_BAIDU_OCR_SECRET_KEY') ||
+    hasEnvironmentValue('VITE_BAIDU_SECRET_KEY');
 
   useEffect(() => {
     setSettings(getSettings());
@@ -67,18 +70,6 @@ export function SettingsPage() {
     setShowKeys((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const handleTestSupabase = async () => {
-    if (!settings.supabaseUrl || !settings.supabaseKey) {
-      setTestResult('请先填写 Supabase URL 和 Key');
-      return;
-    }
-    setTesting(true);
-    setTestResult('');
-    const ok = await testConnection(settings.supabaseUrl, settings.supabaseKey);
-    setTestResult(ok ? '连接成功！' : '连接失败，请检查配置');
-    setTesting(false);
-  };
-
   const handleExport = async () => {
     const data = await exportAllData();
     const blob = new Blob([JSON.stringify(data, null, 2)], {
@@ -102,19 +93,24 @@ export function SettingsPage() {
   const renderKeyInput = (
     label: string,
     key: keyof AppSettings,
-    placeholder: string
+    placeholder: string,
+    locked = false
   ) => {
     const visible = showKeys[key] || false;
     return (
       <div>
-        <label className="block text-sm text-text-secondary mb-1.5">{label}</label>
+        <label className="block text-sm text-text-secondary mb-1.5">
+          {label}
+          {locked && <span className="ml-2 text-xs text-primary-400">环境变量</span>}
+        </label>
         <div className="relative">
           <input
             type={visible ? 'text' : 'password'}
             value={String(settings[key] || '')}
             onChange={(e) => updateSetting(key, e.target.value as AppSettings[typeof key])}
             placeholder={placeholder}
-            className="w-full px-3 py-2 pr-10 bg-white/5 border border-white/10 rounded-lg text-sm text-text-primary placeholder-text-muted outline-none focus:border-primary-500 transition-colors"
+            disabled={locked}
+            className="w-full px-3 py-2 pr-10 bg-white/5 border border-white/10 rounded-lg text-sm text-text-primary placeholder-text-muted outline-none focus:border-primary-500 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
           />
           <button
             onClick={() => toggleShowKey(key)}
@@ -129,15 +125,22 @@ export function SettingsPage() {
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
-      {/* API 配置 */}
-      <Card title="API 配置">
+      {/* OCR 配置 */}
+      <Card title="OCR 配置">
         <div className="space-y-4">
+          <p className="text-xs leading-5 text-text-muted">
+            支持项目根目录的 <code>.env</code> / <code>.env.local</code>。环境变量会优先于本页保存的配置，修改后请重启开发服务。
+          </p>
+          <p className="rounded-lg border border-primary-500/20 bg-primary-600/10 px-3 py-2 text-xs leading-5 text-primary-300">
+            OCR 后按固定卡片规律解析，不调用大模型；商品记录仅保存在本机 IndexedDB，不会同步到远程。
+          </p>
           {/* OCR 引擎选择 */}
           <div>
             <label className="block text-sm text-text-secondary mb-1.5">OCR 识别引擎</label>
             <div className="flex gap-2">
               <button
                 onClick={() => updateSetting('ocrProvider', 'local')}
+                disabled={envOcrProvider}
                 className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer ${
                   settings.ocrProvider === 'local'
                     ? 'bg-primary-600 text-white neon-glow-sm'
@@ -148,6 +151,7 @@ export function SettingsPage() {
               </button>
               <button
                 onClick={() => updateSetting('ocrProvider', 'baidu')}
+                disabled={envOcrProvider}
                 className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer ${
                   settings.ocrProvider === 'baidu'
                     ? 'bg-primary-600 text-white neon-glow-sm'
@@ -160,97 +164,27 @@ export function SettingsPage() {
             <p className="text-xs text-text-muted mt-1.5">
               {settings.ocrProvider === 'local'
                 ? 'Windows.Media.Ocr 系统自带：免费、离线、无需配置'
-                : '百度 OCR 免费额度：每天 500 次通用文字识别'}
+                : '使用百度通用文字识别（基础版，不请求文字坐标）'}
             </p>
           </div>
 
           {settings.ocrProvider === 'baidu' && (
             <>
-              {renderKeyInput('百度 OCR API Key', 'baiduApiKey', '输入百度智能云 API Key')}
-              {renderKeyInput('百度 OCR Secret Key', 'baiduSecretKey', '输入百度智能云 Secret Key')}
+              {renderKeyInput(
+                '百度 OCR API Key',
+                'baiduApiKey',
+                '输入百度智能云 API Key',
+                envBaiduApiKey
+              )}
+              {renderKeyInput(
+                '百度 OCR Secret Key',
+                'baiduSecretKey',
+                '输入百度智能云 Secret Key',
+                envBaiduSecretKey
+              )}
             </>
           )}
 
-          <div>
-            <label className="block text-sm text-text-secondary mb-1.5">大模型提供商</label>
-            <div className="flex gap-2">
-              {(['deepseek', 'qwen'] as const).map((provider) => (
-                <button
-                  key={provider}
-                  onClick={() => updateSetting('llmProvider', provider)}
-                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer ${
-                    settings.llmProvider === provider
-                      ? 'bg-primary-600 text-white neon-glow-sm'
-                      : 'bg-white/5 text-text-secondary hover:bg-white/10'
-                  }`}
-                >
-                  {provider === 'deepseek' ? 'DeepSeek' : '通义千问'}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {renderKeyInput(
-            `${settings.llmProvider === 'deepseek' ? 'DeepSeek' : '通义千问'} API Key`,
-            'llmApiKey',
-            '输入大模型 API Key'
-          )}
-        </div>
-      </Card>
-
-      {/* Supabase 配置 */}
-      <Card title="Supabase 云数据库">
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm text-text-secondary mb-1.5">Supabase URL</label>
-            <input
-              type="text"
-              value={settings.supabaseUrl}
-              onChange={(e) => updateSetting('supabaseUrl', e.target.value)}
-              placeholder="https://your-project.supabase.co"
-              className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-text-primary placeholder-text-muted outline-none focus:border-primary-500 transition-colors"
-            />
-          </div>
-
-          {renderKeyInput('Supabase Anon Key', 'supabaseKey', '输入 Supabase Anon Key')}
-
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Cloud size={16} className="text-text-secondary" />
-              <span className="text-sm text-text-secondary">自动上报</span>
-            </div>
-            <button
-              onClick={() => updateSetting('autoUpload', !settings.autoUpload)}
-              className={`w-10 h-5 rounded-full transition-colors cursor-pointer ${
-                settings.autoUpload ? 'bg-primary-600' : 'bg-white/10'
-              }`}
-            >
-              <div
-                className={`w-4 h-4 rounded-full bg-white transition-transform ${
-                  settings.autoUpload ? 'translate-x-5' : 'translate-x-0.5'
-                }`}
-              />
-            </button>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              onClick={handleTestSupabase}
-              disabled={testing}
-              className="px-4 py-2 bg-primary-600 text-white rounded-lg text-sm hover:bg-primary-500 transition-colors cursor-pointer disabled:opacity-50"
-            >
-              {testing ? '测试中...' : '测试连接'}
-            </button>
-            {testResult && (
-              <span
-                className={`text-sm ${
-                  testResult.includes('成功') ? 'text-success' : 'text-danger'
-                }`}
-              >
-                {testResult}
-              </span>
-            )}
-          </div>
         </div>
       </Card>
 

@@ -32,6 +32,120 @@ pub struct CaptureEvent {
     pub path: Option<String>,
 }
 
+/// 百度 OCR Token 响应
+#[derive(serde::Deserialize)]
+struct BaiduTokenResponse {
+    access_token: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
+}
+
+/// 百度 OCR 响应
+#[derive(serde::Deserialize)]
+struct BaiduOcrResponse {
+    words_result: Option<Vec<BaiduOcrWord>>,
+    words_result_num: Option<u32>,
+    error_code: Option<serde_json::Value>,
+    error_msg: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct BaiduOcrWord {
+    words: String,
+}
+
+async fn response_text(response: reqwest::Response, service: &str) -> Result<String, String> {
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("{} 响应读取失败: {}", service, e))?;
+
+    if !status.is_success() {
+        return Err(format!(
+            "{} 请求失败（HTTP {}）：{}",
+            service,
+            status.as_u16(),
+            body.chars().take(300).collect::<String>()
+        ));
+    }
+
+    Ok(body)
+}
+
+/// Tauri 命令：通过原生 HTTP 调用百度 OCR，避免 WebView 跨域限制
+#[tauri::command]
+async fn ocr_baidu(
+    base64_image: String,
+    api_key: String,
+    secret_key: String,
+) -> Result<String, String> {
+    if api_key.trim().is_empty() || secret_key.trim().is_empty() {
+        return Err("百度 OCR API Key 和 Secret Key 不能为空".to_string());
+    }
+
+    let client = reqwest::Client::new();
+    let token_response = client
+        .post("https://aip.baidubce.com/oauth/2.0/token")
+        .query(&[
+            ("grant_type", "client_credentials"),
+            ("client_id", api_key.trim()),
+            ("client_secret", secret_key.trim()),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("百度 OCR Token 网络请求失败: {}", e))?;
+    let token_body = response_text(token_response, "百度 OCR Token").await?;
+    let token: BaiduTokenResponse = serde_json::from_str(&token_body)
+        .map_err(|e| format!("百度 OCR Token 返回格式错误: {}", e))?;
+    let access_token = token.access_token.ok_or_else(|| {
+        format!(
+            "获取百度 OCR token 失败：{}",
+            token
+                .error_description
+                .or(token.error)
+                .unwrap_or_else(|| "请检查 API Key 和 Secret Key".to_string())
+        )
+    })?;
+
+    let image = base64_image
+        .split_once(',')
+        .map(|(_, value)| value)
+        .unwrap_or(base64_image.as_str());
+    let ocr_response = client
+        .post("https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic")
+        .query(&[("access_token", access_token.as_str())])
+        .form(&[("image", image), ("language_type", "CHN_ENG")])
+        .send()
+        .await
+        .map_err(|e| format!("百度 OCR 网络请求失败: {}", e))?;
+    let ocr_body = response_text(ocr_response, "百度 OCR").await?;
+    let result: BaiduOcrResponse = serde_json::from_str(&ocr_body)
+        .map_err(|e| format!("百度 OCR 返回格式错误: {}", e))?;
+
+    if result.error_msg.is_some() || result.error_code.is_some() {
+        return Err(format!(
+            "OCR 识别失败：{}",
+            result
+                .error_msg
+                .unwrap_or_else(|| format!("错误码 {:?}", result.error_code))
+        ));
+    }
+
+    let _ = result.words_result_num;
+    result
+        .words_result
+        .ok_or_else(|| "百度 OCR 返回结果缺少 words_result".to_string())
+        .map(|words| {
+            words
+                .into_iter()
+                .map(|word| word.words)
+                .filter(|word| !word.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+}
+
 /// 获取截图存储根目录
 fn get_screenshot_root(app: &AppHandle) -> Result<PathBuf, String> {
     let app_data_dir = app
@@ -706,6 +820,7 @@ pub fn run() {
             read_image_base64,
             register_shortcut,
             ocr_local,
+            ocr_baidu,
             start_region_capture,
             get_pending_capture,
             finish_region_capture,

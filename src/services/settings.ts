@@ -1,4 +1,5 @@
 import type { AppSettings } from '../types';
+import { getEnvironmentSettings } from './env';
 
 const SETTINGS_KEY = 'mhxy_commodity_settings';
 
@@ -6,22 +7,18 @@ const DEFAULT_SETTINGS: AppSettings = {
   ocrProvider: 'local',
   baiduApiKey: '',
   baiduSecretKey: '',
-  llmProvider: 'deepseek',
-  llmApiKey: '',
   shortcut: 'Ctrl+Shift+S',
   currentServer: '默认区服',
   currentGame: '梦幻西游',
-  supabaseUrl: '',
-  supabaseKey: '',
-  autoUpload: true,
 };
 
 /** 获取设置 */
 export function getSettings(): AppSettings {
   const stored = localStorage.getItem(SETTINGS_KEY);
-  if (!stored) return DEFAULT_SETTINGS;
+  const saved = stored ? JSON.parse(stored) : {};
 
-  return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
+  // 环境变量优先，适合开发/部署时统一配置；设置页仍可作为本地兜底。
+  return { ...DEFAULT_SETTINGS, ...saved, ...getEnvironmentSettings() };
 }
 
 /** 保存设置 */
