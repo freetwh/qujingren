@@ -1,5 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
-import { emit } from '@tauri-apps/api/event';
+﻿import { invoke } from '@tauri-apps/api/core';
 import type { CommodityRecord, WidgetConfig } from '../types';
 
 const WIDGET_CONFIG_KEY = 'mhxy_widget_config';
@@ -8,6 +7,7 @@ export const DEFAULT_WIDGET_CONFIG: WidgetConfig = {
   locked: false,
   opacity: 0.75,
   maxRows: 200,
+  alwaysOnTop: false,
 };
 
 export function getWidgetConfig(): WidgetConfig {
@@ -49,6 +49,8 @@ export const isWidgetVisible = () => invoke<boolean>('is_widget_visible');
 export const startWidgetDrag = () => invoke<void>('start_widget_drag');
 export const setWidgetLocked = (locked: boolean) =>
   invoke<void>('set_widget_locked', { locked });
+export const setWidgetAlwaysOnTop = (alwaysOnTop: boolean) =>
+  invoke<void>('set_widget_always_on_top', { alwaysOnTop });
 export const getWidgetBounds = () => invoke<WidgetBounds>('get_widget_bounds');
 export const setWidgetBounds = (bounds: WidgetBounds) =>
   invoke<void>('set_widget_bounds', { ...bounds });
@@ -105,9 +107,18 @@ export function computeResizedBounds(
   };
 }
 
-/** 主窗口把刚入库的记录推送给挂件，实现无轮询的实时更新 */
+/** 主窗口把刚入库的记录增量推送给挂件，实现无轮询的实时更新 */
 export const pushWidgetRecords = (records: CommodityRecord[]) =>
   invoke<void>('push_widget_records', { payload: records });
 
-/** 数据被整体清空/替换时，通知挂件全量重载 */
-export const reloadWidget = () => emit('widget-reload');
+/** 主窗口把全部记录的权威快照推送给挂件（挂件自身 IndexedDB 为空，必须靠此同步） */
+export const syncWidgetRecords = (records: CommodityRecord[]) =>
+  invoke<void>('sync_widget_records', { payload: records });
+
+/** 数据被整体清空/替换时，通知挂件全量重载（经 Rust 定向推送到挂件窗口） */
+export const reloadWidget = () =>
+  invoke<void>('emit_widget_reload');
+
+/** OCR 识别状态广播：挂件标题栏据此显示「识别中」提示（经 Rust 定向推送） */
+export const setWidgetRecognizing = (recognizing: boolean) =>
+  invoke<void>('emit_widget_recognizing', { recognizing });

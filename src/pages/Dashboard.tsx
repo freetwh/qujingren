@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+﻿import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Search, Package, Database, HardDrive } from 'lucide-react';
 import {
   LineChart,
@@ -16,11 +16,9 @@ import {
   getAllRecords,
   getRecordsByCategoryAndName,
   getRecordsByDateRange,
-  deleteRecord,
 } from '../db';
-import { reloadWidget } from '../services/widget';
-import { calculateServerAverages, calculatePeriodAverages } from '../services/statistics';
-import { createCommodityColumns, priceFormatter } from '../services/commodityColumns';
+import { calculateServerAverages } from '../services/statistics';
+import { priceFormatter } from '../services/commodityColumns';
 import { toLocalDateString } from '../services/date';
 import type { AveragePrice, CommodityRecord } from '../types';
 
@@ -64,8 +62,8 @@ export function Dashboard() {
     [records]
   );
 
-  const handleSelectCommodity = useCallback(async (record: CommodityRecord) => {
-    const selection = { category: record.category, name: record.name };
+  const handleSelectCommodity = useCallback(async (target: SelectedCommodity) => {
+    const selection = { category: target.category, name: target.name };
     setSelectedCommodity(selection);
 
     const commodityRecords = await getRecordsByCategoryAndName(
@@ -114,24 +112,29 @@ export function Dashboard() {
     setTrendData(chartData);
   }, []);
 
-  const filteredRecords = useMemo(() => {
+  /** 「分类+名称」维度的可选商品，附带记录条数，供图表选择器使用 */
+  const commodityOptions = useMemo(() => {
+    const map = new Map<string, SelectedCommodity & { count: number }>();
+    for (const record of records) {
+      const key = `${record.category}\u0000${record.name}`;
+      const existing = map.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        map.set(key, { category: record.category, name: record.name, count: 1 });
+      }
+    }
+
     const query = searchQuery.trim().toLowerCase();
-    if (!query) return records;
-
-    return records.filter((record) =>
-      [record.category, record.name, record.server, record.date].some((value) =>
-        value.toLowerCase().includes(query)
+    return Array.from(map.values())
+      .filter((item) =>
+        query
+          ? item.category.toLowerCase().includes(query) ||
+            item.name.toLowerCase().includes(query)
+          : true
       )
-    );
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh'));
   }, [records, searchQuery]);
-
-  // 今日/本月均价基于全量记录计算，不受搜索过滤影响
-  const periodAverages = useMemo(() => calculatePeriodAverages(records), [records]);
-
-  const commodityColumns: Column<CommodityRecord>[] = useMemo(
-    () => createCommodityColumns(periodAverages),
-    [periodAverages]
-  );
 
   const avgColumns: Column<AveragePrice>[] = useMemo(
     () => [
@@ -185,25 +188,6 @@ export function Dashboard() {
     }
   };
 
-  /** 纠错：删除单行。二次确认避免误删，删除后重载列表并通知挂件。 */
-  const handleDeleteRecord = useCallback(
-    async (record: CommodityRecord) => {
-      if (record.id === undefined) return;
-      if (!window.confirm(`确定删除「${record.category} / ${record.name}」这条记录吗？此操作不可恢复。`)) {
-        return;
-      }
-      try {
-        await deleteRecord(record.id);
-        await loadRecords();
-        await reloadWidget().catch(console.error);
-      } catch (err) {
-        console.error('删除记录失败:', err);
-        window.alert('删除失败，请重试');
-      }
-    },
-    [loadRecords]
-  );
-
   const sortedAverages = useMemo(() => {
     if (!sortKey) return serverAverages;
     return [...serverAverages].sort((left, right) => {
@@ -246,7 +230,11 @@ export function Dashboard() {
         </Card>
       </div>
 
-      <Card title="商品列表" className="min-h-[200px]">
+      {/*
+        明细数据表已移到悬浮挂件中查看，这里只保留「选择商品」入口，
+        用于驱动下方的各服均价对比与 30 天趋势图。
+      */}
+      <Card title="选择商品" className="min-h-[160px]">
         <div className="mb-4">
           <div className="relative">
             <Search
@@ -256,26 +244,43 @@ export function Dashboard() {
             <input
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="搜索分类、名称、区服或日期..."
+              placeholder="搜索分类或名称..."
               className="w-full pl-9 pr-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-text-primary placeholder-text-muted outline-none focus:border-primary-500 transition-colors"
             />
           </div>
         </div>
 
-        <DataTable
-          columns={commodityColumns}
-          data={filteredRecords}
-          loading={loading}
-          emptyText="暂无商品数据，请先截图采集"
-          onRowClick={handleSelectCommodity}
-          onRowDelete={handleDeleteRecord}
-          rowClassName={(record) =>
-            record.category === selectedCommodity?.category &&
-            record.name === selectedCommodity?.name
-              ? 'bg-primary-600/10'
-              : ''
-          }
-        />
+        {loading ? (
+          <div className="py-8 text-center text-sm text-text-muted">加载中...</div>
+        ) : commodityOptions.length === 0 ? (
+          <div className="py-8 text-center text-sm text-text-muted">
+            暂无商品数据，请先截图采集（明细请在悬浮挂件中查看）
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {commodityOptions.map((option) => {
+              const active =
+                option.category === selectedCommodity?.category &&
+                option.name === selectedCommodity?.name;
+              return (
+                <button
+                  key={`${option.category}\u0000${option.name}`}
+                  type="button"
+                  onClick={() => handleSelectCommodity(option)}
+                  className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
+                    active
+                      ? 'border-primary-500 bg-primary-600/20 text-text-primary'
+                      : 'border-white/10 bg-white/5 text-text-secondary hover:border-white/20 hover:text-text-primary'
+                  }`}
+                >
+                  <span className="text-text-muted">{option.category} / </span>
+                  {option.name}
+                  <span className="ml-1.5 text-xs text-text-muted">{option.count}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </Card>
 
       {selectedCommodity && (

@@ -1,4 +1,4 @@
-import Dexie, { type EntityTable } from 'dexie';
+﻿import Dexie, { type EntityTable } from 'dexie';
 import type { CommodityRecord, AveragePrice } from '../types';
 import { toLocalDateString } from '../services/date';
 
@@ -118,6 +118,22 @@ export async function deleteRecordsForScreenshot(screenshotPath: string): Promis
 /** 删除单条记录（纠错场景） */
 export async function deleteRecord(id: number): Promise<void> {
   await db.records.delete(id);
+}
+
+/**
+ * 批量重命名记录，用于看板内「名称编辑 + 合并」。
+ * 将同一分类+名称+区服的所有记录改名，使其与编辑目标名称的数据在统计上自然合并。
+ */
+export async function renameRecords(
+  category: string,
+  oldName: string,
+  server: string,
+  newName: string
+): Promise<number> {
+  return db.records
+    .where('[category+name+server]')
+    .equals([category, oldName, server])
+    .modify({ name: newName });
 }
 
 /** 批量删除记录（纠错场景，可一次删多行） */

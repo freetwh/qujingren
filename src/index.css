@@ -1,4 +1,4 @@
-@tailwind base;
+﻿@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
@@ -17,6 +17,35 @@
     -moz-osx-font-smoothing: grayscale;
   }
 
+  /* 全局禁止选中文字 */
+  html,
+  body,
+  #root {
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  /* 输入类元素保持可选中、可编辑 */
+  input,
+  textarea,
+  select,
+  [contenteditable='true'],
+  [contenteditable=''],
+  .selectable {
+    -webkit-user-select: text;
+    -moz-user-select: text;
+    -ms-user-select: text;
+    user-select: text;
+  }
+
+  /* 拖拽时不出现文字选中高亮 */
+  ::selection {
+    background: rgba(124, 58, 237, 0.35);
+  }
+
   /* 框选覆盖层窗口：透明背景 */
   body.overlay-mode {
     background-color: transparent;
@@ -24,6 +53,44 @@
 }
 
 @layer components {
+  /**
+   * 悬浮窗轻量半透明滚动条。
+   *
+   * 透明度跟随窗口整体不透明度：由 DataWidget 注入 --widget-opacity（0.2~0.95），
+   * 通过 calc 把它换算成滑块/轨道的 alpha，实现「加减透明度时滚动条一起变化」。
+   */
+  .widget-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, calc(var(--widget-opacity, 0.85) * 0.28)) transparent;
+  }
+
+  .widget-scroll::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .widget-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .widget-scroll::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, calc(var(--widget-opacity, 0.85) * 0.24));
+    border-radius: 999px;
+  }
+
+  .widget-scroll::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(196, 181, 253, calc(var(--widget-opacity, 0.85) * 0.55));
+  }
+
+  .widget-scroll::-webkit-scrollbar-thumb:active {
+    background-color: rgba(167, 139, 250, calc(var(--widget-opacity, 0.85) * 0.75));
+  }
+
+  /* 两条滚动条交汇的直角区域，保持透明避免出现实心方块 */
+  .widget-scroll::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
   .glass-card {
     @apply bg-white/5 backdrop-blur-md border border-white/10 rounded-xl;
   }

@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+﻿import { useState, useEffect, type ReactNode } from 'react';
 import { ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
 
 export interface Column<T> {
@@ -7,6 +7,8 @@ export interface Column<T> {
   sortable?: boolean;
   render?: (value: unknown, row: T, index: number) => ReactNode;
   className?: string;
+  /** 单元格是否可编辑（如看板内直接改商品名称） */
+  editable?: boolean;
 }
 
 interface TableProps<T> {
@@ -17,12 +19,70 @@ interface TableProps<T> {
   onRowClick?: (row: T, index: number) => void;
   /** 行删除回调，提供时在表格最右追加「操作」列（删除按钮） */
   onRowDelete?: (row: T, index: number) => void;
+  /** 可编辑单元格提交回调，参数为行、字段键与新值 */
+  onCellEdit?: (row: T, key: string, value: string) => void;
   sortKey?: string;
   sortOrder?: 'asc' | 'desc';
   onSort?: (key: string) => void;
   rowClassName?: (row: T, index: number) => string;
   /** 标识某行正在删除中（用于禁用按钮/显示加载态） */
   deletingKey?: string | null;
+}
+
+/** 点击进入编辑、失焦/回车提交的可编辑单元格 */
+function EditableCell({
+  value,
+  onCommit,
+}: {
+  value: unknown;
+  onCommit: (next: string) => void;
+}) {
+  const initial = String(value ?? '');
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(initial);
+
+  useEffect(() => {
+    setDraft(initial);
+  }, [initial]);
+
+  if (!editing) {
+    return (
+      <span
+        onClick={(event) => {
+          event.stopPropagation();
+          setDraft(initial);
+          setEditing(true);
+        }}
+        className="cursor-text rounded px-1 -mx-1 hover:bg-white/10"
+        title="点击编辑名称"
+      >
+        {initial || '-'}
+      </span>
+    );
+  }
+
+  return (
+    <input
+      autoFocus
+      value={draft}
+      onClick={(event) => event.stopPropagation()}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => {
+        setEditing(false);
+        const next = draft.trim();
+        if (next && next !== initial) onCommit(next);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          (event.target as HTMLInputElement).blur();
+        } else if (event.key === 'Escape') {
+          setDraft(initial);
+          setEditing(false);
+        }
+      }}
+      className="w-full rounded border border-primary-500 bg-background px-1 py-0.5 text-sm text-text-primary outline-none"
+    />
+  );
 }
 
 export function DataTable<T>({
@@ -32,6 +92,7 @@ export function DataTable<T>({
   emptyText = '暂无数据',
   onRowClick,
   onRowDelete,
+  onCellEdit,
   sortKey,
   sortOrder,
   onSort,
@@ -114,9 +175,16 @@ export function DataTable<T>({
                       key={col.key}
                       className={`px-4 py-3 text-sm text-text-primary ${col.className || ''}`}
                     >
-                      {col.render
-                        ? col.render(row[col.key as keyof T], row, index)
-                        : String(row[col.key as keyof T] ?? '-')}
+                      {col.editable && onCellEdit ? (
+                        <EditableCell
+                          value={row[col.key as keyof T]}
+                          onCommit={(next) => onCellEdit(row, col.key, next)}
+                        />
+                      ) : col.render ? (
+                        col.render(row[col.key as keyof T], row, index)
+                      ) : (
+                        String(row[col.key as keyof T] ?? '-')
+                      )}
                     </td>
                   ))}
                   {hasActions && (

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+﻿import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { Navbar } from './components/Navbar';
@@ -16,9 +16,12 @@ import {
   hideWidget,
   isWidgetVisible,
   pushWidgetRecords,
+  syncWidgetRecords,
+  reloadWidget,
+  setWidgetRecognizing,
   showWidget,
 } from './services/widget';
-import { addRecord, deleteRecordsForScreenshot, hasRecordsForScreenshot } from './db';
+import { addRecord, deleteRecordsForScreenshot, getAllRecords, hasRecordsForScreenshot } from './db';
 import type { Server, ScreenshotResult, CaptureEvent, CommodityRecord } from './types';
 
 /** 顶层路由：框选覆盖层 / 悬浮挂件 / 主应用 */
@@ -36,9 +39,12 @@ function App() {
 
 function MainApp() {
   const [currentPage, setCurrentPage] = useState<'dashboard' | 'settings'>('dashboard');
-  const [servers, setServers] = useState<Server[]>([
-    { id: '1', name: '默认区服', isDefault: true },
-  ]);
+  const initialSettings = getSettings();
+  const [servers, setServers] = useState<Server[]>(
+    initialSettings.servers && initialSettings.servers.length > 0
+      ? initialSettings.servers
+      : [{ id: '1', name: '默认区服', isDefault: true }]
+  );
   const [capturing, setCapturing] = useState(false);
   const [lastOcrText, setLastOcrText] = useState('');
   const [lastOcrPath, setLastOcrPath] = useState('');
@@ -46,7 +52,7 @@ function MainApp() {
   const [dashboardVersion, setDashboardVersion] = useState(0);
   const [widgetOn, setWidgetOn] = useState(false);
   const { toasts, show, remove } = useToast();
-  const settingsRef = useRef(getSettings());
+  const settingsRef = useRef(initialSettings);
 
   // 初始化
   useEffect(() => {
@@ -132,8 +138,10 @@ function MainApp() {
 
       setDashboardVersion((version) => version + 1);
 
-      // 最新记录排在最前，挂件按同样顺序插到顶部
+      // 最新记录排在最前，挂件按同样顺序插到顶部并高亮；
+      // 同时广播全量重载，避免增量推送因窗口状态/时序丢失导致挂件不刷新。
       pushWidgetRecords([...savedRecords].reverse()).catch(console.error);
+      reloadWidget().catch(console.error);
 
       show(`已按规则整理并保存 ${commodities.length} 条本地记录`, 'success');
     },
@@ -147,6 +155,8 @@ function MainApp() {
       setLastOcrText('');
       setLastOcrPath(result.path);
       show('截图成功，正在识别...', 'info');
+      // 通知挂件进入「识别中」状态
+      setWidgetRecognizing(true).catch(console.error);
 
       try {
         // OCR 识别：根据设置选择本地引擎或百度 API
@@ -179,6 +189,9 @@ function MainApp() {
         const message = err instanceof Error ? err.message : String(err);
         console.error('截图识别失败:', message);
         show(`识别失败: ${message}`, 'error');
+      } finally {
+        // 无论成功失败都结束「识别中」状态
+        setWidgetRecognizing(false).catch(console.error);
       }
     },
     [parseAndSave, show]
@@ -241,15 +254,33 @@ function MainApp() {
     };
   }, [processScreenshot, show]);
 
-  // 挂件可能被自身的关闭按钮隐藏，需要同步回主窗口的开关状态
+  // 挂件默认由 Rust 端在启动时预创建并直接显示（见 lib.rs setup）。
+  // 这里只读取真实可见性来同步主窗口开关，绝不主动 showWidget ——
+  // 否则会和预创建窗口叠加出「两个悬浮窗 / 关不掉」的现象。
   useEffect(() => {
-    isWidgetVisible().then(setWidgetOn).catch(console.error);
+    isWidgetVisible()
+      .then(setWidgetOn)
+      .catch(() => setWidgetOn(false));
 
-    const unlisten = listen<boolean>('widget-visibility', (event) => {
+    const unlistenVisibility = listen<boolean>('widget-visibility', (event) => {
       setWidgetOn(event.payload);
     });
+
+    // 挂件挂载/刷新时向主窗口请求全量数据。
+    // 关键：Tauri 多 webview 不共享 IndexedDB，挂件自己的库是空的，
+    // 必须让持有真实数据的主窗口把全量推过去，数据才能实时进入挂件列表。
+    const unlistenSync = listen('widget-request-sync', async () => {
+      try {
+        const all = await getAllRecords();
+        await syncWidgetRecords(all);
+      } catch (err) {
+        console.error('推送挂件全量数据失败:', err);
+      }
+    });
+
     return () => {
-      unlisten.then((fn) => fn());
+      unlistenVisibility.then((fn) => fn());
+      unlistenSync.then((fn) => fn());
     };
   }, []);
 
@@ -268,7 +299,7 @@ function MainApp() {
     }
   }, [widgetOn, show]);
 
-  // 区服管理
+  // 区服管理：选择/新增/删除均持久化到设置，OCR 入库时按 currentServer 归属
   const handleServerSelect = useCallback((name: string) => {
     saveSettings({ currentServer: name });
     settingsRef.current = getSettings();
@@ -280,11 +311,27 @@ function MainApp() {
       name,
       isDefault: false,
     };
-    setServers((prev) => [...prev, newServer]);
+    setServers((prev) => {
+      const next = [...prev, newServer];
+      saveSettings({ servers: next, currentServer: name });
+      settingsRef.current = getSettings();
+      return next;
+    });
   }, []);
 
   const handleServerDelete = useCallback((id: string) => {
-    setServers((prev) => prev.filter((s) => s.id !== id));
+    setServers((prev) => {
+      const target = prev.find((s) => s.id === id);
+      if (!target) return prev;
+      const next = prev.filter((s) => s.id !== id);
+      const fallback = next[0]?.name ?? '默认区服';
+      // 删掉的是当前区服时，回退到列表首个（或默认），保证 OCR 始终有归属
+      const current = settingsRef.current.currentServer;
+      const nextCurrent = current === target.name ? fallback : current;
+      saveSettings({ servers: next, currentServer: nextCurrent });
+      settingsRef.current = getSettings();
+      return next;
+    });
   }, []);
 
   return (

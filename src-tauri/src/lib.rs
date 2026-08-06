@@ -1,4 +1,4 @@
-use base64::Engine;
+﻿use base64::Engine;
 use screenshots::Screen;
 use serde::Serialize;
 use std::fs;
@@ -810,6 +810,18 @@ const WIDGET_LABEL: &str = "widget";
 const WIDGET_MIN_W: f64 = 320.0;
 const WIDGET_MIN_H: f64 = 180.0;
 
+/// Tauri 命令：设置挂件是否置顶。默认不置顶，开启后才浮于最上层
+#[tauri::command]
+async fn set_widget_always_on_top(app: AppHandle, always_on_top: bool) -> Result<(), String> {
+    let window = app
+        .get_webview_window(WIDGET_LABEL)
+        .ok_or("挂件窗口不存在")?;
+    window
+        .set_always_on_top(always_on_top)
+        .map_err(|e| format!("设置挂件置顶失败: {}", e))?;
+    Ok(())
+}
+
 /// 根据 overlay 参数构造窗口 URL。
 ///
 /// 开发模式下 tauri.conf.json 的 devUrl 会覆盖 `WebviewUrl::App` 路径上的 query 串，
@@ -833,11 +845,12 @@ fn build_widget_window(app: &AppHandle) -> Result<tauri::WebviewWindow, String> 
     .title("实时数据挂件")
     .decorations(false)
     .transparent(true)
-    .always_on_top(true)
     .skip_taskbar(true)
     .resizable(true)
     .shadow(false)
-    .inner_size(640.0, 360.0)
+    // 挂件是唯一的数据表载体（主窗口已不再展示明细），
+    // 配合 14px 字号给足默认宽高，避免一打开就横向滚动
+    .inner_size(820.0, 480.0)
     .min_inner_size(WIDGET_MIN_W, WIDGET_MIN_H)
     .visible(false)
     .build()
@@ -853,8 +866,10 @@ async fn show_widget(app: AppHandle) -> Result<(), String> {
     };
 
     window.show().map_err(|e| format!("显示挂件失败: {}", e))?;
-    let _ = window.set_always_on_top(true);
+    let _ = window.set_always_on_top(false);
     let _ = window.set_focus();
+    // 同步可见性给主窗口，使开关状态始终与实际一致（避免「关不掉」的假象）
+    let _ = app.emit_to("main", "widget-visibility", true);
     Ok(())
 }
 
@@ -968,10 +983,33 @@ async fn set_widget_bounds(
     Ok(())
 }
 
-/// Tauri 命令：主窗口把新入库的记录转发给挂件
+/// Tauri 命令：主窗口把新入库的记录增量转发给挂件
 #[tauri::command]
 async fn push_widget_records(app: AppHandle, payload: serde_json::Value) -> Result<(), String> {
     let _ = app.emit_to(WIDGET_LABEL, "widget-records", payload);
+    Ok(())
+}
+
+/// Tauri 命令：主窗口把全部记录的权威快照推给挂件。
+/// 挂件自身 webview 的 IndexedDB 为空（多 webview 不共享存储），
+/// 必须以主窗口数据为准，否则列表永远为空。
+#[tauri::command]
+async fn sync_widget_records(app: AppHandle, payload: serde_json::Value) -> Result<(), String> {
+    let _ = app.emit_to(WIDGET_LABEL, "widget-sync", payload);
+    Ok(())
+}
+
+/// Tauri 命令：通知挂件全量重载（数据被整体变更时）
+#[tauri::command]
+async fn emit_widget_reload(app: AppHandle) -> Result<(), String> {
+    let _ = app.emit_to(WIDGET_LABEL, "widget-reload", ());
+    Ok(())
+}
+
+/// Tauri 命令：通知挂件 OCR 识别状态切换
+#[tauri::command]
+async fn emit_widget_recognizing(app: AppHandle, recognizing: bool) -> Result<(), String> {
+    let _ = app.emit_to(WIDGET_LABEL, "widget-recognizing", recognizing);
     Ok(())
 }
 
@@ -1004,7 +1042,11 @@ pub fn run() {
             set_widget_locked,
             get_widget_bounds,
             set_widget_bounds,
+            set_widget_always_on_top,
             push_widget_records,
+            sync_widget_records,
+            emit_widget_reload,
+            emit_widget_recognizing,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -1038,9 +1080,21 @@ pub fn run() {
                 .build();
             }
 
-            // 预创建隐藏的悬浮挂件窗口，切换显示时无需等待 WebView2 初始化
-            if let Err(e) = build_widget_window(app.handle()) {
-                log::warn!("挂件窗口预创建失败: {}", e);
+            // 预创建悬浮挂件窗口：默认开启（数据表只在挂件里看），
+            // 因此预创建后直接显示，主窗口启动不再额外 show，避免重复窗口。
+            // 若构建失败也不致命，用户仍可手动开启。
+            match build_widget_window(app.handle()) {
+                Ok(window) => {
+                    // 预创建时已 visible(false)，这里直接显示即可；
+                    // 置顶状态交由挂件挂载时按配置（WidgetConfig.alwaysOnTop）统一设置，
+                    // 不在此抢设，避免与「默认不置顶」的预期冲突。
+                    if let Err(e) = window.show() {
+                        log::warn!("挂件窗口显示失败: {}", e);
+                    }
+                    // 同步可见性给主窗口，使其开关初始即为「开」
+                    let _ = app.emit_to("main", "widget-visibility", true);
+                }
+                Err(e) => log::warn!("挂件窗口预创建失败: {}", e),
             }
 
             // 注册默认全局快捷键 Ctrl+Shift+S

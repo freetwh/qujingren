@@ -1,4 +1,4 @@
-import type { Column } from '../components/ui/Table';
+﻿import type { Column } from '../components/ui/Table';
 import { getCommodityKey } from './statistics';
 import type { CommodityRecord, PeriodAverageMap } from '../types';
 
@@ -49,6 +49,7 @@ export function createCommodityColumns(
     {
       key: 'name',
       title: '名称',
+      editable: true,
       render: (value) => (
         <span className="font-medium text-primary-400">{String(value)}</span>
       ),
@@ -59,10 +60,39 @@ export function createCommodityColumns(
     },
     {
       key: 'price',
-      title: compact ? '价格' : '价格（游戏币）',
-      render: (value) => (
-        <span className="font-mono">{priceFormatter.format(Number(value))}</span>
-      ),
+      title: compact ? '最新价格' : '最新价格（游戏币）',
+      render: (value, row) => {
+        const price = Number(value);
+        const formatted = priceFormatter.format(price);
+        const entry = averages.get(getCommodityKey(row));
+        // 以日均价（今日均价，无则回退本月均价）为基准判断波动
+        const base = entry?.todayAvg ?? entry?.monthAvg ?? null;
+
+        if (base === null || base <= 0) {
+          return <span className="font-mono">{formatted}</span>;
+        }
+
+        const ratio = (price - base) / base;
+        const absRatio = Math.abs(ratio);
+        // 与日均价偏离超过 15% 才给出涨跌提示，最新价格文字也随之染色
+        if (absRatio < 0.15) {
+          return <span className="font-mono">{formatted}</span>;
+        }
+
+        const up = ratio > 0;
+        const pct = Math.round(absRatio * 100);
+        const colorClass = up ? 'text-danger' : 'text-success';
+
+        return (
+          <span className={`inline-flex items-baseline gap-1 font-mono ${colorClass}`}>
+            <span>{formatted}</span>
+            <span className="text-[10px] font-bold leading-none">
+              {up ? '↑' : '↓'}
+              {pct}%
+            </span>
+          </span>
+        );
+      },
     },
     {
       key: 'todayAvg',

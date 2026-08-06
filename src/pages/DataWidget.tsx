@@ -1,14 +1,16 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { listen } from '@tauri-apps/api/event';
-import { GripHorizontal, Lock, Unlock, X, Minus, Plus, Trash2 } from 'lucide-react';
-import { getAllRecords, deleteRecord } from '../db';
+﻿import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { listen, emitTo } from '@tauri-apps/api/event';
+import { GripHorizontal, Lock, Unlock, X, Minus, Plus, Pin, PinOff, XCircle, Search, Check, List } from 'lucide-react';
+import { deleteRecord, renameRecords } from '../db';
 import { calculatePeriodAverages } from '../services/statistics';
-import { createCommodityColumns } from '../services/commodityColumns';
+import { createCommodityColumns, priceFormatter } from '../services/commodityColumns';
+import { toLocalDateString, toLocalMonthString } from '../services/date';
 import {
   getWidgetConfig,
   saveWidgetConfig,
   hideWidget,
   setWidgetLocked,
+  setWidgetAlwaysOnTop,
   startWidgetDrag,
   getWidgetBounds,
   setWidgetBounds,
@@ -39,10 +41,70 @@ function recordKey(record: CommodityRecord, index: number): string {
   return `${record.category}\u0000${record.name}\u0000${record.server}\u0000${record.price}\u0000${record.createdAt}\u0000${index}`;
 }
 
+/** 悬浮框名称内联编辑：输入框定宽，避免编辑时撑宽当前列 */
+function WidgetEditableName({
+  value,
+  onCommit,
+}: {
+  value: unknown;
+  onCommit: (next: string) => void;
+}) {
+  const initial = String(value ?? '');
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(initial);
+
+  useEffect(() => {
+    setDraft(initial);
+  }, [initial]);
+
+  if (!editing) {
+    return (
+      <span
+        onClick={(event) => {
+          event.stopPropagation();
+          setDraft(initial);
+          setEditing(true);
+        }}
+        className="cursor-text rounded px-1 -mx-1 font-medium text-primary-400 hover:bg-white/10"
+        title="点击编辑名称"
+      >
+        {initial || '-'}
+      </span>
+    );
+  }
+
+  return (
+    <input
+      autoFocus
+      value={draft}
+      onClick={(event) => event.stopPropagation()}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => {
+        setEditing(false);
+        onCommit(draft);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          (event.target as HTMLInputElement).blur();
+        } else if (event.key === 'Escape') {
+          setDraft(initial);
+          setEditing(false);
+        }
+      }}
+      // 固定宽度防止编辑态撑宽列，与名称列实际宽度解耦
+      className="w-[110px] max-w-full rounded border border-primary-500 bg-background px-1 py-0.5 text-[14px] text-text-primary outline-none"
+    />
+  );
+}
+
 export function DataWidget() {
   const [records, setRecords] = useState<CommodityRecord[]>([]);
   const [config, setConfig] = useState(getWidgetConfig);
   const [highlightCount, setHighlightCount] = useState(0);
+  const [recognizing, setRecognizing] = useState(false);
+  const [activeTab, setActiveTab] = useState<'realtime' | 'commodity'>('realtime');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchText, setSearchText] = useState('');
   const configRef = useRef(config);
   configRef.current = config;
 
@@ -53,15 +115,17 @@ export function DataWidget() {
     };
   }, []);
 
-  // 首次挂载拉取历史数据；锁定状态需要同步到窗口，避免刷新后状态与窗口不一致
+  // 首次挂载：向主窗口请求全量数据。
+  // 注意：Tauri 每个 webview 拥有独立的 IndexedDB，挂件自己的库是空的，
+  // 不能调用 getAllRecords()（会读到空）；真实数据由主窗口持有并通过事件推送。
   useEffect(() => {
-    getAllRecords()
-      .then((all) => setRecords(all.slice(0, configRef.current.maxRows)))
-      .catch(console.error);
+    emitTo('main', 'widget-request-sync')
+      .catch((err) => console.error('请求挂件同步失败:', err));
     setWidgetLocked(configRef.current.locked).catch(console.error);
+    setWidgetAlwaysOnTop(configRef.current.alwaysOnTop).catch(console.error);
   }, []);
 
-  /** 新记录插到顶部并去重，超出上限的旧记录被裁掉 */
+  /** 增量新增：把主窗口刚入库的记录插到顶部并去重，超出上限的旧记录被裁掉 */
   const prependRecords = useCallback((incoming: CommodityRecord[]) => {
     if (incoming.length === 0) return;
 
@@ -74,6 +138,15 @@ export function DataWidget() {
     // 顶部新增行做一次高亮提示
     setHighlightCount(incoming.length);
     window.setTimeout(() => setHighlightCount(0), 2000);
+  }, []);
+
+  /** 全量替换：主窗口响应同步请求时推送的完整数据，直接作为权威列表 */
+  const replaceRecords = useCallback((all: CommodityRecord[]) => {
+    if (all.length === 0) {
+      setRecords([]);
+      return;
+    }
+    setRecords(all.slice(0, configRef.current.maxRows));
   }, []);
 
   /** 纠错：删除单行。删除后本地移除并通知主窗口重载列表 */
@@ -95,24 +168,108 @@ export function DataWidget() {
       prependRecords(event.payload ?? []);
     });
 
-    // 数据被清空/导入等整体变更时全量重载
+    // 数据整体变更（删除/清空/导入）时，不再读自己的空库，
+    // 而是请求主窗口把权威全量数据再推一遍。
     const unlistenReload = listen('widget-reload', () => {
-      getAllRecords()
-        .then((all) => setRecords(all.slice(0, configRef.current.maxRows)))
-        .catch(console.error);
+      emitTo('main', 'widget-request-sync')
+        .catch((err) => console.error('请求挂件同步失败:', err));
+    });
+
+    // 主窗口响应同步请求，推送全量数据
+    const unlistenSync = listen<CommodityRecord[]>('widget-sync', (event) => {
+      replaceRecords(event.payload ?? []);
+    });
+
+    // 主窗口 OCR 识别状态切换
+    const unlistenRecognizing = listen<boolean>('widget-recognizing', (event) => {
+      setRecognizing(Boolean(event.payload));
     });
 
     return () => {
       unlistenRecords.then((fn) => fn());
       unlistenReload.then((fn) => fn());
+      unlistenSync.then((fn) => fn());
+      unlistenRecognizing.then((fn) => fn());
     };
-  }, [prependRecords]);
+  }, [prependRecords, replaceRecords]);
 
   const periodAverages = useMemo(() => calculatePeriodAverages(records), [records]);
   const columns = useMemo(
     () => createCommodityColumns(periodAverages, true),
     [periodAverages]
   );
+
+  /**
+   * 商品数据视图：按名称去重后的列表（最新记录在数组靠前位置）。
+   *
+   * 均价单独在这里按「名称」维度累加，而不复用 periodAverages：
+   * 后者按「分类+名称+区服」聚合，同名商品跨区服时无法直接取用。
+   */
+  const commodityList = useMemo(() => {
+    const today = toLocalDateString();
+    const month = toLocalMonthString();
+
+    type Bucket = {
+      name: string;
+      category: string;
+      latest: CommodityRecord;
+      count: number;
+      servers: string[];
+      todayTotal: number;
+      todayCount: number;
+      monthTotal: number;
+      monthCount: number;
+    };
+
+    const map = new Map<string, Bucket>();
+    for (const record of records) {
+      let bucket = map.get(record.name);
+      if (!bucket) {
+        bucket = {
+          name: record.name,
+          category: record.category,
+          latest: record,
+          count: 0,
+          servers: [],
+          todayTotal: 0,
+          todayCount: 0,
+          monthTotal: 0,
+          monthCount: 0,
+        };
+        map.set(record.name, bucket);
+      }
+
+      bucket.count += 1;
+      if (!bucket.servers.includes(record.server)) {
+        bucket.servers.push(record.server);
+      }
+
+      if (Number.isFinite(record.price)) {
+        if (record.date === today) {
+          bucket.todayTotal += record.price;
+          bucket.todayCount += 1;
+        }
+        if (record.date.startsWith(month)) {
+          bucket.monthTotal += record.price;
+          bucket.monthCount += 1;
+        }
+      }
+    }
+
+    const query = searchText.trim().toLowerCase();
+    return Array.from(map.values())
+      .filter((item) => (query ? item.name.toLowerCase().includes(query) : true))
+      .map((item) => ({
+        ...item,
+        todayAvg: item.todayCount
+          ? Math.round((item.todayTotal / item.todayCount) * 100) / 100
+          : null,
+        monthAvg: item.monthCount
+          ? Math.round((item.monthTotal / item.monthCount) * 100) / 100
+          : null,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh'));
+  }, [records, searchText]);
 
   const toggleLock = useCallback(async () => {
     const next = saveWidgetConfig({ locked: !configRef.current.locked });
@@ -123,6 +280,32 @@ export function DataWidget() {
       console.error('切换锁定状态失败:', err);
     }
   }, []);
+
+  /** 切换置顶：默认不置顶，开启后才浮于最上层 */
+  const toggleAlwaysOnTop = useCallback(async () => {
+    const next = saveWidgetConfig({ alwaysOnTop: !configRef.current.alwaysOnTop });
+    setConfig(next);
+    try {
+      await setWidgetAlwaysOnTop(next.alwaysOnTop);
+    } catch (err) {
+      console.error('切换置顶状态失败:', err);
+    }
+  }, []);
+
+  /** 名称编辑：把同一分类+名称+区服的记录整体改名，与同名数据在统计上合并 */
+  const handleNameEdit = useCallback(
+    async (row: CommodityRecord, value: string) => {
+      const next = value.trim();
+      if (!next || next === row.name) return;
+      try {
+        await renameRecords(row.category, row.name, row.server, next);
+        await reloadWidget().catch(console.error);
+      } catch (err) {
+        console.error('重命名记录失败:', err);
+      }
+    },
+    []
+  );
 
   const adjustOpacity = useCallback((delta: number) => {
     const opacity = Math.min(0.95, Math.max(0.2, configRef.current.opacity + delta));
@@ -182,10 +365,24 @@ export function DataWidget() {
 
   const { locked, opacity } = config;
 
+  /**
+   * 吸顶层（标题栏 / 表头 / 工具条）的底色。
+   *
+   * 它们盖在内容之上必须不透明于正文，否则滚动时文字会互相透出；
+   * 但又不能写死，否则加减透明度时这几处会「固定发实」。
+   * 这里按窗口透明度按比例抬高一点，保证遮挡效果的同时整体一起变化。
+   */
+  const overlayOpacity = Math.min(1, opacity + 0.12);
+  const overlayBackground = `rgba(15, 15, 26, ${overlayOpacity})`;
+
   return (
     <div
       className="fixed inset-0 flex flex-col overflow-hidden rounded-xl border border-white/20 text-text-primary shadow-2xl backdrop-blur-2xl"
-      style={{ backgroundColor: `rgba(15, 15, 26, ${opacity})` }}
+      style={{
+        backgroundColor: `rgba(15, 15, 26, ${opacity})`,
+        // 供 .widget-scroll 计算滚动条 alpha
+        ['--widget-opacity' as string]: String(opacity),
+      }}
       onContextMenu={(event) => event.preventDefault()}
     >
       {/* 玻璃高光：顶部渐亮 + 内描边，营造透明玻璃质感 */}
@@ -200,9 +397,10 @@ export function DataWidget() {
 
       {/* 标题栏：解锁时可拖拽移动窗口 */}
       <div
-        className={`relative z-10 flex shrink-0 items-center justify-between gap-2 border-b border-white/10 px-3 py-2 ${
+        className={`relative z-10 flex shrink-0 items-center justify-between gap-2 border-b border-white/10 px-3 py-2 backdrop-blur-xl ${
           locked ? '' : 'cursor-move'
         }`}
+        style={{ backgroundColor: overlayBackground }}
         onMouseDown={(event) => {
           // 仅左键、且点击的不是按钮时才发起拖拽
           if (locked || event.button !== 0) return;
@@ -212,15 +410,42 @@ export function DataWidget() {
       >
         <div className="flex min-w-0 items-center gap-2">
           <GripHorizontal
-            size={14}
+            size={16}
             className={locked ? 'text-text-muted' : 'text-primary-400'}
           />
-          <span className="truncate text-xs font-semibold">实时数据</span>
-          <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-text-secondary">
+          <button
+            type="button"
+            onClick={() => setActiveTab('realtime')}
+            className={`rounded px-2 py-0.5 text-[14px] font-semibold transition-colors ${
+              activeTab === 'realtime'
+                ? 'bg-white/15 text-text-primary'
+                : 'text-text-secondary hover:bg-white/10 hover:text-text-primary'
+            }`}
+          >
+            实时数据
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('commodity')}
+            className={`rounded px-2 py-0.5 text-[14px] font-semibold transition-colors ${
+              activeTab === 'commodity'
+                ? 'bg-white/15 text-text-primary'
+                : 'text-text-secondary hover:bg-white/10 hover:text-text-primary'
+            }`}
+          >
+            商品数据
+          </button>
+          <span className="rounded bg-white/10 px-1.5 py-0.5 text-[13px] text-text-secondary">
             {records.length}
           </span>
+          {recognizing && (
+            <span className="inline-flex items-center gap-1 rounded bg-info/20 px-1.5 py-0.5 text-[13px] text-info">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-info" />
+              识别中
+            </span>
+          )}
           {locked && (
-            <span className="rounded bg-warning/20 px-1.5 py-0.5 text-[10px] text-warning">
+            <span className="rounded bg-warning/20 px-1.5 py-0.5 text-[13px] text-warning">
               已锁定
             </span>
           )}
@@ -232,14 +457,14 @@ export function DataWidget() {
             title="降低不透明度"
             className="rounded p-1 text-text-secondary transition-colors hover:bg-white/10 hover:text-text-primary"
           >
-            <Minus size={12} />
+            <Minus size={14} />
           </button>
           <button
             onClick={() => adjustOpacity(0.1)}
             title="提高不透明度"
             className="rounded p-1 text-text-secondary transition-colors hover:bg-white/10 hover:text-text-primary"
           >
-            <Plus size={12} />
+            <Plus size={14} />
           </button>
           <button
             onClick={toggleLock}
@@ -248,79 +473,215 @@ export function DataWidget() {
               locked ? 'text-warning' : 'text-text-secondary hover:text-text-primary'
             }`}
           >
-            {locked ? <Lock size={12} /> : <Unlock size={12} />}
+            {locked ? <Lock size={14} /> : <Unlock size={14} />}
+          </button>
+          <button
+            onClick={toggleAlwaysOnTop}
+            title={config.alwaysOnTop ? '取消置顶' : '置顶（置于所有窗口上方）'}
+            className={`rounded p-1 transition-colors hover:bg-white/10 ${
+              config.alwaysOnTop ? 'text-primary-400' : 'text-text-secondary hover:text-text-primary'
+            }`}
+          >
+            {config.alwaysOnTop ? <Pin size={14} /> : <PinOff size={14} />}
           </button>
           <button
             onClick={() => hideWidget().catch(console.error)}
             title="关闭挂件"
             className="rounded p-1 text-text-secondary transition-colors hover:bg-danger/30 hover:text-danger"
           >
-            <X size={12} />
+            <X size={14} />
           </button>
         </div>
       </div>
 
-      {/* 数据表格：列与主看板商品列表一致 */}
-      <div className="relative z-10 flex-1 overflow-auto">
-        <table className="w-full">
-          <thead className="sticky top-0 z-10 bg-background/80 backdrop-blur-xl">
-            <tr className="border-b border-white/10">
-              {columns.map((col) => (
-                <th
-                  key={col.key}
-                  className="whitespace-nowrap px-2 py-1.5 text-left text-[11px] font-semibold text-text-secondary"
-                >
-                  {col.title}
-                </th>
-              ))}
-              <th className="whitespace-nowrap px-1 py-1.5 text-right text-[11px] font-semibold text-text-secondary">
-                操作
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {records.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={columns.length + 1}
-                  className="px-2 py-10 text-center text-xs text-text-muted"
-                >
-                  暂无数据，截图采集后会实时出现在这里
-                </td>
-              </tr>
-            ) : (
-              records.map((row, index) => (
-                <tr
-                  key={recordKey(row, index)}
-                  className={`border-b border-white/5 transition-colors ${
-                    index < highlightCount ? 'bg-primary-600/25' : 'hover:bg-white/5'
-                  }`}
-                >
+      {/* 实时数据 / 商品数据 两个标签页 */}
+      <div className="widget-scroll relative z-10 flex-1 overflow-auto">
+        {activeTab === 'realtime' ? (
+          <>
+            <table className="w-full">
+              <thead
+                className="sticky top-0 z-10 backdrop-blur-xl"
+                style={{ backgroundColor: overlayBackground }}
+              >
+                <tr className="border-b border-white/10">
                   {columns.map((col) => (
-                    <td
+                    <th
                       key={col.key}
-                      className="whitespace-nowrap px-2 py-1 text-[11px] text-text-primary"
+                      className="whitespace-nowrap px-2 py-2 text-left text-[14px] font-semibold text-text-secondary"
                     >
-                      {col.render
-                        ? col.render(row[col.key as keyof CommodityRecord], row, index)
-                        : String(row[col.key as keyof CommodityRecord] ?? '-')}
-                    </td>
+                      {col.title}
+                    </th>
                   ))}
-                  <td className="px-1 py-1 text-right">
-                    <button
-                      type="button"
-                      onClick={() => removeRecord(row)}
-                      title="删除此行（纠错）"
-                      className="rounded p-1 text-text-muted transition-colors hover:bg-danger/20 hover:text-danger"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </td>
+                  <th className="whitespace-nowrap px-1 py-2 text-right text-[14px] font-semibold text-text-secondary">
+                    操作
+                  </th>
                 </tr>
-              ))
+              </thead>
+              <tbody>
+                {records.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={columns.length + 1}
+                      className="px-2 py-10 text-center text-[14px] text-text-muted"
+                    >
+                      暂无数据，截图采集后会实时出现在这里
+                    </td>
+                  </tr>
+                ) : (
+                  records.map((row, index) => (
+                    <tr
+                      key={recordKey(row, index)}
+                      className={`border-b border-white/5 transition-colors ${
+                        index < highlightCount ? 'bg-primary-600/25' : 'hover:bg-white/5'
+                      }`}
+                    >
+                      {columns.map((col) => (
+                        <td
+                          key={col.key}
+                          className={`whitespace-nowrap px-2 py-1.5 text-[14px] text-text-primary ${
+                            col.key === 'name' ? 'max-w-[150px] truncate' : ''
+                          }`}
+                        >
+                          {col.key === 'name' ? (
+                            <WidgetEditableName
+                              value={row.name}
+                              onCommit={(next) => handleNameEdit(row, next)}
+                            />
+                          ) : col.render ? (
+                            col.render(row[col.key as keyof CommodityRecord], row, index)
+                          ) : (
+                            String(row[col.key as keyof CommodityRecord] ?? '-')
+                          )}
+                        </td>
+                      ))}
+                      <td className="px-1 py-1 text-right">
+                        <button
+                          type="button"
+                          onClick={() => removeRecord(row)}
+                          title="移除"
+                          className="rounded p-1 text-text-muted transition-colors hover:bg-danger/20 hover:text-danger"
+                        >
+                          <XCircle size={14} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+            {records.length >= configRef.current.maxRows && (
+              <div className="pointer-events-none py-2 text-center text-[13px] text-text-muted">
+                实时数据最多展示 {configRef.current.maxRows} 条
+              </div>
             )}
-          </tbody>
-        </table>
+          </>
+        ) : (
+          <>
+            {/* 商品数据：名称去重列表 + 搜索 */}
+            <div
+              className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-white/10 px-2 py-2 backdrop-blur-xl"
+              style={{ backgroundColor: overlayBackground }}
+            >
+              <span className="flex items-center gap-1.5 text-[14px] font-semibold text-text-secondary">
+                <List size={14} />
+                名称（{commodityList.length}）
+              </span>
+              <button
+                type="button"
+                onClick={() => setSearchOpen((open) => !open)}
+                title="搜索名称"
+                className={`rounded p-1 transition-colors hover:bg-white/10 ${
+                  searchOpen ? 'text-primary-400' : 'text-text-secondary hover:text-text-primary'
+                }`}
+              >
+                <Search size={14} />
+              </button>
+            </div>
+
+            {searchOpen && (
+              <div className="flex items-center gap-1 border-b border-white/10 bg-white/5 px-2 py-1.5">
+                <input
+                  autoFocus
+                  value={searchText}
+                  onChange={(event) => setSearchText(event.target.value)}
+                  placeholder="输入名称过滤..."
+                  className="min-w-0 flex-1 rounded border border-white/15 bg-background px-2 py-1 text-[14px] text-text-primary outline-none placeholder:text-text-muted focus:border-primary-500"
+                />
+                {searchText && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchText('')}
+                    title="清空"
+                    className="rounded p-1 text-text-muted transition-colors hover:bg-white/10 hover:text-text-primary"
+                  >
+                    <XCircle size={14} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setSearchOpen(false)}
+                  title="确认"
+                  className="rounded p-1 text-success transition-colors hover:bg-white/10"
+                >
+                  <Check size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchText('');
+                    setSearchOpen(false);
+                  }}
+                  title="取消"
+                  className="rounded p-1 text-text-muted transition-colors hover:bg-white/10 hover:text-text-primary"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+
+            {commodityList.length === 0 ? (
+              <div className="px-2 py-10 text-center text-[14px] text-text-muted">
+                {searchText ? '没有匹配的名称' : '暂无商品数据'}
+              </div>
+            ) : (
+              <ul className="divide-y divide-white/5">
+                {commodityList.map((item) => (
+                  <li key={item.name} className="px-2 py-2 hover:bg-white/5">
+                    <div className="min-w-0">
+                      <div className="truncate text-[14px] font-medium text-primary-400">
+                        {item.name}
+                      </div>
+                      <div className="truncate text-[13px] text-text-muted">
+                        {item.category} · {item.servers.join('/')} · {item.count} 条
+                      </div>
+                    </div>
+                    {/* 最新价格 / 今日均价 / 本月均价，与实时数据表配色保持一致 */}
+                    <div className="mt-1 flex items-baseline gap-3 text-[13px] text-text-muted">
+                      <span className="inline-flex items-baseline gap-1">
+                        最新
+                        <span className="font-mono text-[14px] text-text-primary">
+                          {priceFormatter.format(Number(item.latest.price))}
+                        </span>
+                      </span>
+                      <span className="inline-flex items-baseline gap-1">
+                        今日
+                        <span className="font-mono text-[14px] text-info">
+                          {item.todayAvg === null ? '-' : priceFormatter.format(item.todayAvg)}
+                        </span>
+                      </span>
+                      <span className="inline-flex items-baseline gap-1">
+                        本月
+                        <span className="font-mono text-[14px] text-success">
+                          {item.monthAvg === null ? '-' : priceFormatter.format(item.monthAvg)}
+                        </span>
+                      </span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
       </div>
 
       {/* 缩放热区：锁定时不渲染，彻底禁止改变大小 */}

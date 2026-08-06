@@ -1,4 +1,4 @@
-/** 商品记录 */
+﻿/** 商品记录 */
 export interface CommodityRecord {
   id?: number;
   category: string;
@@ -53,6 +53,7 @@ export interface WidgetConfig {
   locked: boolean;
   opacity: number;
   maxRows: number;
+  alwaysOnTop: boolean;
 }
 
 /** 应用设置 */
@@ -63,6 +64,8 @@ export interface AppSettings {
   shortcut: string;
   currentServer: string;
   currentGame: string;
+  /** 已添加的区服列表，持久化以便选择后跨重启保留 */
+  servers?: Server[];
 }
 
 /** OCR 识别结果 */
