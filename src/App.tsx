@@ -6,21 +6,30 @@ import { Card } from './components/ui/Card';
 import { Dashboard } from './pages/Dashboard';
 import { SettingsPage } from './pages/SettingsPage';
 import { RegionSelector } from './pages/RegionSelector';
+import { DataWidget } from './pages/DataWidget';
 import { Toast, useToast } from './components/ui/Toast';
 import { getSettings, saveSettings } from './services/settings';
 import { recognizeText, recognizeTextLocal } from './services/ocr';
 import { parseCommoditiesByRules } from './services/ruleParser';
 import { toLocalDateString } from './services/date';
+import {
+  hideWidget,
+  isWidgetVisible,
+  pushWidgetRecords,
+  showWidget,
+} from './services/widget';
 import { addRecord, deleteRecordsForScreenshot, hasRecordsForScreenshot } from './db';
-import type { Server, ScreenshotResult, CaptureEvent } from './types';
+import type { Server, ScreenshotResult, CaptureEvent, CommodityRecord } from './types';
 
-/** 顶层路由：框选覆盖层窗口 or 主应用 */
+/** 顶层路由：框选覆盖层 / 悬浮挂件 / 主应用 */
 function App() {
-  const isOverlay =
-    new URLSearchParams(window.location.search).get('overlay') === 'region';
+  const overlay = new URLSearchParams(window.location.search).get('overlay');
 
-  if (isOverlay) {
+  if (overlay === 'region') {
     return <RegionSelector />;
+  }
+  if (overlay === 'widget') {
+    return <DataWidget />;
   }
   return <MainApp />;
 }
@@ -35,6 +44,7 @@ function MainApp() {
   const [lastOcrPath, setLastOcrPath] = useState('');
   const [ocrCopied, setOcrCopied] = useState(false);
   const [dashboardVersion, setDashboardVersion] = useState(0);
+  const [widgetOn, setWidgetOn] = useState(false);
   const { toasts, show, remove } = useToast();
   const settingsRef = useRef(getSettings());
 
@@ -53,9 +63,15 @@ function MainApp() {
       show(event.payload.message, 'error');
     });
 
+    // 挂件删除行 / 设置页清空数据后，刷新主看板列表
+    const unlistenWidgetReload = listen('widget-reload', () => {
+      setDashboardVersion((version) => version + 1);
+    });
+
     return () => {
       unlistenShortcut.then((fn) => fn());
       unlistenShortcutFailed.then((fn) => fn());
+      unlistenWidgetReload.then((fn) => fn());
     };
   }, []);
 
@@ -96,21 +112,29 @@ function MainApp() {
 
       const settings = getSettings();
       const today = toLocalDateString();
+      const savedRecords: CommodityRecord[] = [];
+
       for (const commodity of commodities) {
-        await addRecord({
+        const payload = {
           category: commodity.category,
           name: commodity.name,
           seller: commodity.seller,
           price: commodity.price,
           quantity: commodity.quantity,
+          level: commodity.level ?? null,
           server: settings.currentServer,
           date: today,
           screenshotPath,
           rawText: ocrText,
-        });
+        };
+        savedRecords.push(await addRecord(payload));
       }
 
       setDashboardVersion((version) => version + 1);
+
+      // 最新记录排在最前，挂件按同样顺序插到顶部
+      pushWidgetRecords([...savedRecords].reverse()).catch(console.error);
+
       show(`已按规则整理并保存 ${commodities.length} 条本地记录`, 'success');
     },
     [show]
@@ -217,6 +241,33 @@ function MainApp() {
     };
   }, [processScreenshot, show]);
 
+  // 挂件可能被自身的关闭按钮隐藏，需要同步回主窗口的开关状态
+  useEffect(() => {
+    isWidgetVisible().then(setWidgetOn).catch(console.error);
+
+    const unlisten = listen<boolean>('widget-visibility', (event) => {
+      setWidgetOn(event.payload);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  const toggleWidget = useCallback(async () => {
+    try {
+      if (widgetOn) {
+        await hideWidget();
+        setWidgetOn(false);
+      } else {
+        await showWidget();
+        setWidgetOn(true);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      show(`挂件操作失败: ${message}`, 'error');
+    }
+  }, [widgetOn, show]);
+
   // 区服管理
   const handleServerSelect = useCallback((name: string) => {
     saveSettings({ currentServer: name });
@@ -249,6 +300,8 @@ function MainApp() {
         onManualCapture={handleCapture}
         capturing={capturing}
         shortcut={settingsRef.current.shortcut}
+        widgetOn={widgetOn}
+        onToggleWidget={toggleWidget}
       />
 
       <main className="pt-14 p-6">

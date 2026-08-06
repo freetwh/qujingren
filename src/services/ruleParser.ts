@@ -2,6 +2,9 @@ import type { ParsedCommodity } from '../types';
 
 const UNKNOWN_SELLER = '未知摊位';
 
+/** 宠物卡片中的等级行，如「等级：0」「等级:120」 */
+const PET_LEVEL = /^等级[:：]?(\d+)$/;
+
 const ITEM_ALIASES: ReadonlyArray<{
   name: string;
   aliases: readonly string[];
@@ -137,6 +140,30 @@ function extractPriceDetails(lines: string[]): PriceDetail[] {
   }));
 }
 
+/**
+ * 提取宠物卡片：每一行「等级：N」对应其上方的宠物名，组成一条宠物记录。
+ * 多个同级宠物可能在一张卡片里分两列排布（先列出所有宠物名+等级，再统一列出单价）。
+ */
+function extractPets(lines: string[]): { name: string; level: number }[] {
+  const pets: { name: string; level: number }[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const levelMatch = PET_LEVEL.exec(lines[index]);
+    if (!levelMatch) continue;
+
+    const nameLine = lines[index - 1];
+    if (!nameLine) continue;
+
+    // 宠物名通常是上一行整行；去掉可能尾随的标点，仅保留中文/字母数字。
+    const name = nameLine.replace(/[^\u4e00-\u9fa5A-Za-z0-9·•]/g, '').trim();
+    if (!name) continue;
+
+    pets.push({ name, level: Number(levelMatch[1]) });
+  }
+
+  return pets;
+}
+
 function extractSeller(lines: string[]): string {
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
@@ -172,9 +199,13 @@ function createCommodity(
 /**
  * 按固定摊位卡片规律解析 OCR 文本。
  *
- * 只接受白名单商品名以及带“单价”的正整数价格。价格按游戏内原值保存，
- * 不换算单位。跨行结果只有在商品名和价格数量完全一致时才会配对，避免
- * OCR 漏行后把后续价格错配给其他商品。
+ * 支持两种卡片布局：
+ *  - 宠物卡片：每行「宠物名」紧接着「等级：N」，卡片末尾统一列出「单价」+ 价格。
+ *    带等级的行一律归类为「宠物」，等级会并入名称以便不同等级分开统计均价。
+ *  - 普通商品：白名单商品名 + 带“单价”的正整数价格。
+ *
+ * 价格按游戏内原值保存，不换算单位。跨行结果只有在商品数量与价格数量完全一致
+ * 时才会配对，避免 OCR 漏行后把后续价格错配给其他商品。
  */
 export function parseCommoditiesByRules(ocrText: string): ParsedCommodity[] {
   const lines = ocrText
@@ -182,10 +213,27 @@ export function parseCommoditiesByRules(ocrText: string): ParsedCommodity[] {
     .map(compactLine)
     .filter(Boolean);
   const seller = extractSeller(lines);
-  const names = lines.flatMap(extractNames);
   const details = extractPriceDetails(lines);
 
-  // 没有坐标时只在两组数量完全一致的情况下按百度阅读顺序配对。
+  // 宠物卡片：宠物数需与价格数一致才能配对。
+  const pets = extractPets(lines);
+  if (pets.length > 0 && pets.length === details.length) {
+    return pets.flatMap((pet, index) => {
+      const detail = details[index];
+      return [
+        {
+          category: '宠物',
+          name: `等级${pet.level} ${pet.name}`,
+          seller,
+          price: detail.price,
+          quantity: 1,
+          level: pet.level,
+        },
+      ];
+    });
+  }
+
+  const names = lines.flatMap(extractNames);
   if (names.length === 0 || names.length !== details.length) return [];
 
   return names.flatMap((name, index) => {

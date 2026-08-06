@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 /// 缓存屏幕列表（枚举显示器较慢，只需一次）
@@ -286,8 +286,9 @@ fn collect_windows(scale: f64) -> Vec<WindowRectInfo> {
                     let clen = GetClassNameW(hwnd, &mut class_buf);
                     let class_name = String::from_utf16_lossy(&class_buf[..clen as usize]);
 
-                    // 排除框选窗口自身和系统窗口（任务栏/桌面）
+                    // 排除框选窗口/挂件自身和系统窗口（任务栏/桌面）
                     if title != "框选截图区域"
+                        && title != "实时数据挂件"
                         && class_name != "Shell_TrayWnd"
                         && class_name != "Progman"
                         && class_name != "WorkerW"
@@ -413,7 +414,7 @@ async fn start_region_capture(
         WebviewWindowBuilder::new(
             &app,
             "region-selector",
-            WebviewUrl::App("index.html?overlay=region".into()),
+            overlay_url("region"),
         )
         .title("框选截图区域")
         .decorations(false)
@@ -803,6 +804,177 @@ fn on_shortcut(app: &AppHandle, _shortcut: &Shortcut, event: tauri_plugin_global
     );
 }
 
+// ========== 桌面悬浮挂件 ==========
+
+const WIDGET_LABEL: &str = "widget";
+const WIDGET_MIN_W: f64 = 320.0;
+const WIDGET_MIN_H: f64 = 180.0;
+
+/// 根据 overlay 参数构造窗口 URL。
+///
+/// 开发模式下 tauri.conf.json 的 devUrl 会覆盖 `WebviewUrl::App` 路径上的 query 串，
+/// 导致 overlay 参数丢失、窗口错误地加载主应用。因此 dev 模式改用 External 显式拼接 query，
+/// 生产模式才使用 App 路径（构建产物始终带 query）。
+fn overlay_url(overlay: &str) -> tauri::WebviewUrl {
+    if cfg!(debug_assertions) {
+        tauri::WebviewUrl::External(
+            format!("http://localhost:5173/?overlay={}", overlay)
+                .parse()
+                .expect("挂件 URL 解析失败"),
+        )
+    } else {
+        tauri::WebviewUrl::App(format!("index.html?overlay={}", overlay).into())
+    }
+}
+
+/// 排除挂件窗口自身，避免框选时把挂件当成目标窗口
+fn build_widget_window(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
+    WebviewWindowBuilder::new(app, WIDGET_LABEL, overlay_url("widget"))
+    .title("实时数据挂件")
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(true)
+    .shadow(false)
+    .inner_size(640.0, 360.0)
+    .min_inner_size(WIDGET_MIN_W, WIDGET_MIN_H)
+    .visible(false)
+    .build()
+    .map_err(|e| format!("创建挂件窗口失败: {}", e))
+}
+
+/// Tauri 命令：显示悬浮挂件（不存在则创建）
+#[tauri::command]
+async fn show_widget(app: AppHandle) -> Result<(), String> {
+    let window = match app.get_webview_window(WIDGET_LABEL) {
+        Some(w) => w,
+        None => build_widget_window(&app)?,
+    };
+
+    window.show().map_err(|e| format!("显示挂件失败: {}", e))?;
+    let _ = window.set_always_on_top(true);
+    let _ = window.set_focus();
+    Ok(())
+}
+
+/// Tauri 命令：隐藏悬浮挂件（保留窗口以便下次秒开）
+#[tauri::command]
+async fn hide_widget(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(WIDGET_LABEL) {
+        window.hide().map_err(|e| format!("隐藏挂件失败: {}", e))?;
+    }
+    let _ = app.emit_to("main", "widget-visibility", false);
+    Ok(())
+}
+
+/// Tauri 命令：查询挂件是否可见
+#[tauri::command]
+async fn is_widget_visible(app: AppHandle) -> Result<bool, String> {
+    Ok(app
+        .get_webview_window(WIDGET_LABEL)
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false))
+}
+
+/// Tauri 命令：开始拖拽挂件（交给系统处理，避免手动跟随鼠标的抖动）
+#[tauri::command]
+async fn start_widget_drag(app: AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window(WIDGET_LABEL)
+        .ok_or("挂件窗口不存在")?;
+    window
+        .start_dragging()
+        .map_err(|e| format!("拖拽挂件失败: {}", e))
+}
+
+/// Tauri 命令：锁定/解锁挂件。锁定时禁止改变大小并让窗口忽略鼠标事件
+#[tauri::command]
+async fn set_widget_locked(app: AppHandle, locked: bool) -> Result<(), String> {
+    let window = app
+        .get_webview_window(WIDGET_LABEL)
+        .ok_or("挂件窗口不存在")?;
+
+    window
+        .set_resizable(!locked)
+        .map_err(|e| format!("设置挂件可缩放状态失败: {}", e))?;
+
+    Ok(())
+}
+
+/// 挂件当前的位置与尺寸（逻辑像素）
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct WidgetBounds {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Tauri 命令：读取挂件当前位置与尺寸，供前端计算缩放增量
+#[tauri::command]
+async fn get_widget_bounds(app: AppHandle) -> Result<WidgetBounds, String> {
+    let window = app
+        .get_webview_window(WIDGET_LABEL)
+        .ok_or("挂件窗口不存在")?;
+
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let position = window
+        .outer_position()
+        .map_err(|e| format!("获取挂件位置失败: {}", e))?;
+    let size = window
+        .outer_size()
+        .map_err(|e| format!("获取挂件尺寸失败: {}", e))?;
+
+    Ok(WidgetBounds {
+        x: position.x as f64 / scale,
+        y: position.y as f64 / scale,
+        width: size.width as f64 / scale,
+        height: size.height as f64 / scale,
+    })
+}
+
+/// Tauri 命令：直接设置挂件位置与尺寸（锁定时忽略），尺寸按最小值钳制
+#[tauri::command]
+async fn set_widget_bounds(
+    app: AppHandle,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    use tauri::{LogicalPosition, LogicalSize};
+
+    let window = app
+        .get_webview_window(WIDGET_LABEL)
+        .ok_or("挂件窗口不存在")?;
+
+    // 锁定时窗口被设为不可缩放，直接忽略请求，双保险防止绕过前端限制
+    if !window.is_resizable().unwrap_or(true) {
+        return Ok(());
+    }
+
+    let width = width.max(WIDGET_MIN_W);
+    let height = height.max(WIDGET_MIN_H);
+
+    window
+        .set_size(LogicalSize::new(width, height))
+        .map_err(|e| format!("设置挂件尺寸失败: {}", e))?;
+    window
+        .set_position(LogicalPosition::new(x, y))
+        .map_err(|e| format!("设置挂件位置失败: {}", e))?;
+
+    Ok(())
+}
+
+/// Tauri 命令：主窗口把新入库的记录转发给挂件
+#[tauri::command]
+async fn push_widget_records(app: AppHandle, payload: serde_json::Value) -> Result<(), String> {
+    let _ = app.emit_to(WIDGET_LABEL, "widget-records", payload);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -825,6 +997,14 @@ pub fn run() {
             get_pending_capture,
             finish_region_capture,
             cancel_region_capture,
+            show_widget,
+            hide_widget,
+            is_widget_visible,
+            start_widget_drag,
+            set_widget_locked,
+            get_widget_bounds,
+            set_widget_bounds,
+            push_widget_records,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -843,7 +1023,7 @@ pub fn run() {
                 let _ = WebviewWindowBuilder::new(
                     app,
                     "region-selector",
-                    WebviewUrl::App("index.html?overlay=region".into()),
+                    overlay_url("region"),
                 )
                 .title("框选截图区域")
                 .decorations(false)
@@ -856,6 +1036,11 @@ pub fn run() {
                 .inner_size(logical_w, logical_h)
                 .visible(false)
                 .build();
+            }
+
+            // 预创建隐藏的悬浮挂件窗口，切换显示时无需等待 WebView2 初始化
+            if let Err(e) = build_widget_window(app.handle()) {
+                log::warn!("挂件窗口预创建失败: {}", e);
             }
 
             // 注册默认全局快捷键 Ctrl+Shift+S

@@ -47,12 +47,13 @@ class CommodityDatabase extends Dexie {
 
 export const db = new CommodityDatabase();
 
-/** 添加商品记录 */
-export async function addRecord(record: Omit<CommodityRecord, 'id' | 'createdAt'>) {
-  return db.records.add({
-    ...record,
-    createdAt: new Date().toISOString(),
-  });
+/** 添加商品记录，返回入库后的完整记录（含自增 id 与创建时间） */
+export async function addRecord(
+  record: Omit<CommodityRecord, 'id' | 'createdAt'>
+): Promise<CommodityRecord> {
+  const saved = { ...record, createdAt: new Date().toISOString() };
+  const id = await db.records.add(saved);
+  return { ...saved, id: Number(id) };
 }
 
 /** 按分类、商品名和区服查询记录 */
@@ -112,6 +113,16 @@ export async function deleteRecordsForScreenshot(screenshotPath: string): Promis
     .filter((record) => record.screenshotPath === screenshotPath)
     .primaryKeys();
   await db.records.bulkDelete(keys);
+}
+
+/** 删除单条记录（纠错场景） */
+export async function deleteRecord(id: number): Promise<void> {
+  await db.records.delete(id);
+}
+
+/** 批量删除记录（纠错场景，可一次删多行） */
+export async function deleteRecords(ids: number[]): Promise<void> {
+  await db.records.bulkDelete(ids);
 }
 
 /** 获取所有区服列表 */

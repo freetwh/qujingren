@@ -6,6 +6,8 @@ export interface CommodityRecord {
   seller: string;
   price: number;
   quantity: number;
+  /** 宠物类商品的等级，普通商品为 null */
+  level?: number | null;
   server: string;
   date: string;
   screenshotPath: string;
@@ -33,6 +35,26 @@ export interface AveragePrice {
   date: string;
 }
 
+/** 单个商品在某个周期内的均价汇总 */
+export interface PeriodAverage {
+  /** 今日均价，当日无样本时为 null */
+  todayAvg: number | null;
+  todayCount: number;
+  /** 本自然月均价，当月无样本时为 null */
+  monthAvg: number | null;
+  monthCount: number;
+}
+
+/** key 为 `分类\0名称\0区服` */
+export type PeriodAverageMap = Map<string, PeriodAverage>;
+
+/** 悬浮挂件配置 */
+export interface WidgetConfig {
+  locked: boolean;
+  opacity: number;
+  maxRows: number;
+}
+
 /** 应用设置 */
 export interface AppSettings {
   ocrProvider: 'local' | 'baidu';
@@ -56,6 +78,8 @@ export interface ParsedCommodity {
   seller: string;
   price: number;
   quantity: number;
+  /** 宠物类商品的等级，普通商品为 null */
+  level?: number | null;
 }
 
 /** Tauri 框选完成后返回的截图 */

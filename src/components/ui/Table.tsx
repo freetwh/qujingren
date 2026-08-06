@@ -15,10 +15,14 @@ interface TableProps<T> {
   loading?: boolean;
   emptyText?: string;
   onRowClick?: (row: T, index: number) => void;
+  /** 行删除回调，提供时在表格最右追加「操作」列（删除按钮） */
+  onRowDelete?: (row: T, index: number) => void;
   sortKey?: string;
   sortOrder?: 'asc' | 'desc';
   onSort?: (key: string) => void;
   rowClassName?: (row: T, index: number) => string;
+  /** 标识某行正在删除中（用于禁用按钮/显示加载态） */
+  deletingKey?: string | null;
 }
 
 export function DataTable<T>({
@@ -27,10 +31,12 @@ export function DataTable<T>({
   loading = false,
   emptyText = '暂无数据',
   onRowClick,
+  onRowDelete,
   sortKey,
   sortOrder,
   onSort,
   rowClassName,
+  deletingKey,
 }: TableProps<T>) {
   if (loading) {
     return (
@@ -42,6 +48,8 @@ export function DataTable<T>({
       </div>
     );
   }
+
+  const hasActions = Boolean(onRowDelete);
 
   return (
     <div className="glass-card overflow-hidden">
@@ -75,13 +83,18 @@ export function DataTable<T>({
                   </div>
                 </th>
               ))}
+              {hasActions && (
+                <th className="px-4 py-3 text-right text-sm font-semibold text-text-secondary">
+                  操作
+                </th>
+              )}
             </tr>
           </thead>
           <tbody>
             {data.length === 0 ? (
               <tr>
                 <td
-                  colSpan={columns.length}
+                  colSpan={columns.length + (hasActions ? 1 : 0)}
                   className="px-4 py-12 text-center text-text-muted"
                 >
                   {emptyText}
@@ -106,6 +119,19 @@ export function DataTable<T>({
                         : String(row[col.key as keyof T] ?? '-')}
                     </td>
                   ))}
+                  {hasActions && (
+                    <td className="px-4 py-3 text-right" onClick={(event) => event.stopPropagation()}>
+                      <button
+                        type="button"
+                        disabled={deletingKey === String((row as { id?: number }).id ?? index)}
+                        onClick={() => onRowDelete?.(row, index)}
+                        className="rounded-md px-2 py-1 text-xs text-danger/80 transition-colors hover:bg-danger/15 hover:text-danger disabled:opacity-40"
+                        title="删除此行数据（纠错）"
+                      >
+                        删除
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))
             )}

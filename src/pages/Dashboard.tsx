@@ -16,16 +16,15 @@ import {
   getAllRecords,
   getRecordsByCategoryAndName,
   getRecordsByDateRange,
+  deleteRecord,
 } from '../db';
-import { calculateServerAverages } from '../services/statistics';
+import { reloadWidget } from '../services/widget';
+import { calculateServerAverages, calculatePeriodAverages } from '../services/statistics';
+import { createCommodityColumns, priceFormatter } from '../services/commodityColumns';
 import { toLocalDateString } from '../services/date';
 import type { AveragePrice, CommodityRecord } from '../types';
 
 const COLORS = ['#7C3AED', '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#EC4899', '#8B5CF6'];
-
-const priceFormatter = new Intl.NumberFormat('zh-CN', {
-  maximumFractionDigits: 2,
-});
 
 interface SelectedCommodity {
   category: string;
@@ -126,39 +125,12 @@ export function Dashboard() {
     );
   }, [records, searchQuery]);
 
+  // 今日/本月均价基于全量记录计算，不受搜索过滤影响
+  const periodAverages = useMemo(() => calculatePeriodAverages(records), [records]);
+
   const commodityColumns: Column<CommodityRecord>[] = useMemo(
-    () => [
-      {
-        key: 'category',
-        title: '分类',
-        render: (value) => (
-          <span className="text-text-secondary">{String(value)}</span>
-        ),
-      },
-      {
-        key: 'name',
-        title: '名称',
-        render: (value) => (
-          <span className="font-medium text-primary-400">{String(value)}</span>
-        ),
-      },
-      {
-        key: 'server',
-        title: '区服',
-      },
-      {
-        key: 'price',
-        title: '价格（游戏币）',
-        render: (value) => (
-          <span className="font-mono">{priceFormatter.format(Number(value))}</span>
-        ),
-      },
-      {
-        key: 'date',
-        title: '日期',
-      },
-    ],
-    []
+    () => createCommodityColumns(periodAverages),
+    [periodAverages]
   );
 
   const avgColumns: Column<AveragePrice>[] = useMemo(
@@ -212,6 +184,25 @@ export function Dashboard() {
       setSortOrder('asc');
     }
   };
+
+  /** 纠错：删除单行。二次确认避免误删，删除后重载列表并通知挂件。 */
+  const handleDeleteRecord = useCallback(
+    async (record: CommodityRecord) => {
+      if (record.id === undefined) return;
+      if (!window.confirm(`确定删除「${record.category} / ${record.name}」这条记录吗？此操作不可恢复。`)) {
+        return;
+      }
+      try {
+        await deleteRecord(record.id);
+        await loadRecords();
+        await reloadWidget().catch(console.error);
+      } catch (err) {
+        console.error('删除记录失败:', err);
+        window.alert('删除失败，请重试');
+      }
+    },
+    [loadRecords]
+  );
 
   const sortedAverages = useMemo(() => {
     if (!sortKey) return serverAverages;
@@ -277,6 +268,7 @@ export function Dashboard() {
           loading={loading}
           emptyText="暂无商品数据，请先截图采集"
           onRowClick={handleSelectCommodity}
+          onRowDelete={handleDeleteRecord}
           rowClassName={(record) =>
             record.category === selectedCommodity?.category &&
             record.name === selectedCommodity?.name

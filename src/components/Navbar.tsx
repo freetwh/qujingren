@@ -1,4 +1,4 @@
-import { Camera, Settings, BarChart3, Keyboard } from 'lucide-react';
+import { Camera, Settings, BarChart3, Keyboard, PanelTop } from 'lucide-react';
 import { ServerSelector } from './ServerSelector';
 import type { Server } from '../types';
 
@@ -13,6 +13,8 @@ interface NavbarProps {
   onManualCapture: () => void;
   capturing: boolean;
   shortcut: string;
+  widgetOn: boolean;
+  onToggleWidget: () => void;
 }
 
 export function Navbar({
@@ -26,6 +28,8 @@ export function Navbar({
   onManualCapture,
   capturing,
   shortcut,
+  widgetOn,
+  onToggleWidget,
 }: NavbarProps) {
   return (
     <nav className="fixed top-0 left-0 right-0 z-30 h-14 bg-background/80 backdrop-blur-xl border-b border-white/10">
@@ -76,6 +80,19 @@ export function Navbar({
             <Keyboard size={12} />
             <span>{shortcut}</span>
           </div>
+
+          <button
+            onClick={onToggleWidget}
+            title={widgetOn ? '关闭桌面悬浮挂件' : '开启桌面悬浮挂件'}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-colors cursor-pointer ${
+              widgetOn
+                ? 'bg-primary-600/20 text-primary-400'
+                : 'text-text-secondary hover:text-text-primary hover:bg-white/5'
+            }`}
+          >
+            <PanelTop size={14} />
+            桌面挂件
+          </button>
 
           <button
             onClick={onManualCapture}

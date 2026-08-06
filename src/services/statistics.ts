@@ -1,5 +1,70 @@
-import type { CommodityRecord, AveragePrice } from '../types';
-import { toLocalDateString } from './date';
+import type { CommodityRecord, AveragePrice, PeriodAverageMap } from '../types';
+import { toLocalDateString, toLocalMonthString } from './date';
+
+/** 商品唯一键：分类 + 名称 + 区服，均价必须在同一区服内比较 */
+export function getCommodityKey(
+  record: Pick<CommodityRecord, 'category' | 'name' | 'server'>
+): string {
+  return `${record.category}\u0000${record.name}\u0000${record.server}`;
+}
+
+/**
+ * 预计算每个「分类+名称+区服」在今日与本月的均价。
+ *
+ * 一次遍历同时累加两个维度，避免在表格渲染时对每一行重复过滤全量数据。
+ */
+export function calculatePeriodAverages(
+  records: CommodityRecord[],
+  now = new Date()
+): PeriodAverageMap {
+  const today = toLocalDateString(now);
+  const month = toLocalMonthString(now);
+
+  const todaySum = new Map<string, { total: number; count: number }>();
+  const monthSum = new Map<string, { total: number; count: number }>();
+
+  const accumulate = (
+    target: Map<string, { total: number; count: number }>,
+    key: string,
+    price: number
+  ) => {
+    const entry = target.get(key);
+    if (entry) {
+      entry.total += price;
+      entry.count += 1;
+    } else {
+      target.set(key, { total: price, count: 1 });
+    }
+  };
+
+  for (const record of records) {
+    if (!Number.isFinite(record.price)) continue;
+    const key = getCommodityKey(record);
+
+    if (record.date === today) {
+      accumulate(todaySum, key, record.price);
+    }
+    if (record.date.startsWith(month)) {
+      accumulate(monthSum, key, record.price);
+    }
+  }
+
+  const result: PeriodAverageMap = new Map();
+  const keys = new Set([...todaySum.keys(), ...monthSum.keys()]);
+
+  for (const key of keys) {
+    const todayEntry = todaySum.get(key);
+    const monthEntry = monthSum.get(key);
+    result.set(key, {
+      todayAvg: todayEntry ? Math.round((todayEntry.total / todayEntry.count) * 100) / 100 : null,
+      todayCount: todayEntry?.count ?? 0,
+      monthAvg: monthEntry ? Math.round((monthEntry.total / monthEntry.count) * 100) / 100 : null,
+      monthCount: monthEntry?.count ?? 0,
+    });
+  }
+
+  return result;
+}
 
 /** 计算均价 */
 export function calculateAverage(records: CommodityRecord[]): AveragePrice | null {

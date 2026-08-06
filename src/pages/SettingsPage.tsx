@@ -13,6 +13,7 @@ import {
 import { Card } from '../components/ui/Card';
 import { hasEnvironmentValue } from '../services/env';
 import { getSettings, saveSettings } from '../services/settings';
+import { reloadWidget } from '../services/widget';
 import { clearAllData, exportAllData } from '../db';
 import type { AppSettings } from '../types';
 
@@ -86,6 +87,8 @@ export function SettingsPage() {
   const handleClearData = async () => {
     if (window.confirm('确定要清除所有本地数据吗？此操作不可恢复。')) {
       await clearAllData();
+      // 挂件是独立窗口，主窗口 reload 不会带上它，需要单独通知
+      await reloadWidget().catch(console.error);
       window.location.reload();
     }
   };
