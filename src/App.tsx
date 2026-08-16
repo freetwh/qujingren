@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { Navbar } from './components/Navbar';
@@ -21,7 +21,7 @@ import {
   setWidgetRecognizing,
   showWidget,
 } from './services/widget';
-import { addRecord, deleteRecordsForScreenshot, getAllRecords, hasRecordsForScreenshot } from './db';
+import { addRecord, deleteRecord, deleteRecordsForScreenshot, getAllRecords, hasRecordsForScreenshot, renameRecords } from './db';
 import type { Server, ScreenshotResult, CaptureEvent, CommodityRecord } from './types';
 
 /** 顶层路由：框选覆盖层 / 悬浮挂件 / 主应用 */
@@ -141,9 +141,9 @@ function MainApp() {
       // 最新记录排在最前，挂件按同样顺序插到顶部并高亮；
       // 同时广播全量重载，避免增量推送因窗口状态/时序丢失导致挂件不刷新。
       pushWidgetRecords([...savedRecords].reverse()).catch(console.error);
-      reloadWidget().catch(console.error);
-
-      show(`已按规则整理并保存 ${commodities.length} 条本地记录`, 'success');
+      getAllRecords()
+        .then(syncWidgetRecords)
+        .catch((err) => console.error('推送挂件全量数据失败:', err));
     },
     [show]
   );
@@ -278,9 +278,43 @@ function MainApp() {
       }
     });
 
+    // 监听器注册完成后主动推一次全量数据：
+    // 挂件的首次同步请求可能在本监听器注册前发出而丢失，主动推送可兜底
+    getAllRecords()
+      .then(syncWidgetRecords)
+      .catch((err) => console.error('主动推送挂件数据失败:', err));
+
+    // 挂件通知主窗口删除记录（挂件自己的 IndexedDB 是空的，无法直接删）
+    const unlistenDelete = listen<number>('widget-delete-record', async (event) => {
+      try {
+        await deleteRecord(event.payload);
+        const all = await getAllRecords();
+        await syncWidgetRecords(all);
+      } catch (err) {
+        console.error('主窗口删除记录失败:', err);
+      }
+    });
+
+    // 挂件通知主窗口重命名记录
+    const unlistenRename = listen<{ category: string; oldName: string; server: string; newName: string }>(
+      'widget-rename-record',
+      async (event) => {
+        try {
+          const { category, oldName, server, newName } = event.payload;
+          await renameRecords(category, oldName, server, newName);
+          const all = await getAllRecords();
+          await syncWidgetRecords(all);
+        } catch (err) {
+          console.error('主窗口重命名记录失败:', err);
+        }
+      }
+    );
+
     return () => {
       unlistenVisibility.then((fn) => fn());
       unlistenSync.then((fn) => fn());
+      unlistenDelete.then((fn) => fn());
+      unlistenRename.then((fn) => fn());
     };
   }, []);
 

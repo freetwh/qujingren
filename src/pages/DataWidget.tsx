@@ -1,7 +1,7 @@
-﻿import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { listen, emitTo } from '@tauri-apps/api/event';
 import { GripHorizontal, Lock, Unlock, X, Minus, Plus, Pin, PinOff, XCircle, Search, Check, List } from 'lucide-react';
-import { deleteRecord, renameRecords } from '../db';
+// 挂件不直接操作 IndexedDB，所有写操作通过事件通知主窗口代理
 import { calculatePeriodAverages } from '../services/statistics';
 import { createCommodityColumns, priceFormatter } from '../services/commodityColumns';
 import { toLocalDateString, toLocalMonthString } from '../services/date';
@@ -107,6 +107,8 @@ export function DataWidget() {
   const [searchText, setSearchText] = useState('');
   const configRef = useRef(config);
   configRef.current = config;
+  /** 是否已收到主窗口的全量数据推送（用于同步请求的重试终止） */
+  const syncedRef = useRef(false);
 
   useEffect(() => {
     document.body.classList.add('overlay-mode');
@@ -116,13 +118,29 @@ export function DataWidget() {
   }, []);
 
   // 首次挂载：向主窗口请求全量数据。
-  // 注意：Tauri 每个 webview 拥有独立的 IndexedDB，挂件自己的库是空的，
-  // 不能调用 getAllRecords()（会读到空）；真实数据由主窗口持有并通过事件推送。
   useEffect(() => {
-    emitTo('main', 'widget-request-sync')
-      .catch((err) => console.error('请求挂件同步失败:', err));
+    // 主窗口监听器可能尚未注册（冷启动竞态），单次请求容易丢失，
+    // 因此延迟 300ms 首发后每秒重试，直到收到 widget-sync 全量推送为止（最多约 30 次）
+    const requestSync = () => {
+      emitTo('main', 'widget-request-sync')
+        .catch((err) => console.error('请求挂件同步失败:', err));
+    };
+    const timer = window.setTimeout(requestSync, 300);
+    let attempts = 0;
+    const retry = window.setInterval(() => {
+      attempts += 1;
+      if (syncedRef.current || attempts > 30) {
+        window.clearInterval(retry);
+        return;
+      }
+      requestSync();
+    }, 1000);
     setWidgetLocked(configRef.current.locked).catch(console.error);
     setWidgetAlwaysOnTop(configRef.current.alwaysOnTop).catch(console.error);
+    return () => {
+      window.clearTimeout(timer);
+      window.clearInterval(retry);
+    };
   }, []);
 
   /** 增量新增：把主窗口刚入库的记录插到顶部并去重，超出上限的旧记录被裁掉 */
@@ -142,6 +160,8 @@ export function DataWidget() {
 
   /** 全量替换：主窗口响应同步请求时推送的完整数据，直接作为权威列表 */
   const replaceRecords = useCallback((all: CommodityRecord[]) => {
+    // 收到全量推送即视为同步链路已通，停止挂载时的重试
+    syncedRef.current = true;
     if (all.length === 0) {
       setRecords([]);
       return;
@@ -155,9 +175,8 @@ export function DataWidget() {
     // 删除是数据纠错，与「锁定（禁止移动/缩放）」无关，始终允许
     setRecords((prev) => prev.filter((item) => item.id !== record.id));
     try {
-      await deleteRecord(record.id);
-      // 通知主窗口（Dashboard）重新加载，保持两端数据一致
-      await reloadWidget().catch(console.error);
+      // 挂件自己的 IndexedDB 是空的，通知主窗口代理删除
+      await emitTo('main', 'widget-delete-record', record.id);
     } catch (err) {
       console.error('删除记录失败:', err);
     }
@@ -298,8 +317,13 @@ export function DataWidget() {
       const next = value.trim();
       if (!next || next === row.name) return;
       try {
-        await renameRecords(row.category, row.name, row.server, next);
-        await reloadWidget().catch(console.error);
+        // 挂件自己的 IndexedDB 是空的，通知主窗口代理重命名
+        await emitTo('main', 'widget-rename-record', {
+          category: row.category,
+          oldName: row.name,
+          server: row.server,
+          newName: next,
+        });
       } catch (err) {
         console.error('重命名记录失败:', err);
       }

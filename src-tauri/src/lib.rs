@@ -519,7 +519,9 @@ async fn finish_region_capture(
 
     // 6. 通知主窗口继续 OCR 流程
     log::info!("截图已保存: {} ({}x{})", result.path, pw, ph);
-    let _ = app.emit_to("main", "region-captured", result.clone());
+    if let Err(e) = app.emit_to("main", "region-captured", result.clone()) {
+        log::warn!("通知主窗口截图完成失败: {}", e);
+    }
 
     Ok(result)
 }
@@ -536,7 +538,9 @@ async fn cancel_region_capture(
         let _ = w.hide();
     }
 
-    let _ = app.emit_to("main", "region-cancelled", ());
+    if let Err(e) = app.emit_to("main", "region-cancelled", ()) {
+        log::warn!("通知主窗口取消截图失败: {}", e);
+    }
     Ok(())
 }
 
@@ -879,7 +883,9 @@ async fn hide_widget(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(WIDGET_LABEL) {
         window.hide().map_err(|e| format!("隐藏挂件失败: {}", e))?;
     }
-    let _ = app.emit_to("main", "widget-visibility", false);
+    if let Err(e) = app.emit_to("main", "widget-visibility", false) {
+        log::warn!("同步挂件可见性失败: {}", e);
+    }
     Ok(())
 }
 
@@ -986,7 +992,9 @@ async fn set_widget_bounds(
 /// Tauri 命令：主窗口把新入库的记录增量转发给挂件
 #[tauri::command]
 async fn push_widget_records(app: AppHandle, payload: serde_json::Value) -> Result<(), String> {
-    let _ = app.emit_to(WIDGET_LABEL, "widget-records", payload);
+    if let Err(e) = app.emit_to(WIDGET_LABEL, "widget-records", payload) {
+        log::warn!("push_widget_records 失败: {}", e);
+    }
     Ok(())
 }
 
@@ -995,21 +1003,27 @@ async fn push_widget_records(app: AppHandle, payload: serde_json::Value) -> Resu
 /// 必须以主窗口数据为准，否则列表永远为空。
 #[tauri::command]
 async fn sync_widget_records(app: AppHandle, payload: serde_json::Value) -> Result<(), String> {
-    let _ = app.emit_to(WIDGET_LABEL, "widget-sync", payload);
+    if let Err(e) = app.emit_to(WIDGET_LABEL, "widget-sync", payload) {
+        log::warn!("sync_widget_records 失败: {}", e);
+    }
     Ok(())
 }
 
 /// Tauri 命令：通知挂件全量重载（数据被整体变更时）
 #[tauri::command]
 async fn emit_widget_reload(app: AppHandle) -> Result<(), String> {
-    let _ = app.emit_to(WIDGET_LABEL, "widget-reload", ());
+    if let Err(e) = app.emit_to(WIDGET_LABEL, "widget-reload", ()) {
+        log::warn!("emit_widget_reload 失败: {}", e);
+    }
     Ok(())
 }
 
 /// Tauri 命令：通知挂件 OCR 识别状态切换
 #[tauri::command]
 async fn emit_widget_recognizing(app: AppHandle, recognizing: bool) -> Result<(), String> {
-    let _ = app.emit_to(WIDGET_LABEL, "widget-recognizing", recognizing);
+    if let Err(e) = app.emit_to(WIDGET_LABEL, "widget-recognizing", recognizing) {
+        log::warn!("emit_widget_recognizing 失败: {}", e);
+    }
     Ok(())
 }
 
@@ -1092,7 +1106,9 @@ pub fn run() {
                         log::warn!("挂件窗口显示失败: {}", e);
                     }
                     // 同步可见性给主窗口，使其开关初始即为「开」
-                    let _ = app.emit_to("main", "widget-visibility", true);
+                    if let Err(e) = app.emit_to("main", "widget-visibility", true) {
+                        log::warn!("同步挂件可见性失败: {}", e);
+                    }
                 }
                 Err(e) => log::warn!("挂件窗口预创建失败: {}", e),
             }
