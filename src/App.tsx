@@ -10,6 +10,7 @@ import { DataWidget } from './pages/DataWidget';
 import { Toast, useToast } from './components/ui/Toast';
 import { getSettings, saveSettings } from './services/settings';
 import { recognizeText, recognizeTextLocal } from './services/ocr';
+import { extractCommoditiesWithKimi } from './services/kimiExtract';
 import { parseCommoditiesByRules } from './services/ruleParser';
 import { toLocalDateString } from './services/date';
 import {
@@ -17,12 +18,11 @@ import {
   isWidgetVisible,
   pushWidgetRecords,
   syncWidgetRecords,
-  reloadWidget,
   setWidgetRecognizing,
   showWidget,
 } from './services/widget';
 import { addRecord, deleteRecord, deleteRecordsForScreenshot, getAllRecords, hasRecordsForScreenshot, renameRecords } from './db';
-import type { Server, ScreenshotResult, CaptureEvent, CommodityRecord } from './types';
+import type { Server, ScreenshotResult, CaptureEvent, CommodityRecord, ParsedCommodity } from './types';
 
 /** 顶层路由：框选覆盖层 / 悬浮挂件 / 主应用 */
 function App() {
@@ -99,8 +99,20 @@ function MainApp() {
   }, [capturing, show]);
 
   const parseAndSave = useCallback(
-    async (ocrText: string, screenshotPath: string, replaceExisting = false) => {
-      const commodities = parseCommoditiesByRules(ocrText);
+    async (
+      ocrText: string,
+      screenshotPath: string,
+      replaceExisting = false,
+      aiCommodities?: ParsedCommodity[]
+    ) => {
+      // 优先用 Kimi 抽取的结构化商品；抽取失败或无结果时回退到固定规则解析
+      let commodities = aiCommodities ?? [];
+      if (commodities.length === 0) {
+        if (aiCommodities) {
+          console.log('[RULE] AI 抽取无结果，回退到固定规则解析');
+        }
+        commodities = parseCommoditiesByRules(ocrText);
+      }
       console.log('[RULE] 解析结果:', commodities);
 
       if (commodities.length === 0) {
@@ -184,7 +196,28 @@ function MainApp() {
           return;
         }
 
-        await parseAndSave(ocrText, result.path);
+        // 可选：Kimi 开放平台直接抽取结构化商品（含商品名纠错补全）。
+        // 抽取失败不阻断链路，自动回退到固定规则解析。
+        let aiCommodities: ParsedCommodity[] | undefined;
+        if (settings.aiRefine) {
+          if (!settings.kimiApiKey) {
+            show('已开启 AI 整理但未配置 Kimi API Key，本次直接使用规则解析', 'warning');
+          } else {
+            try {
+              aiCommodities = await extractCommoditiesWithKimi(
+                ocrText,
+                settings.kimiApiKey,
+                settings.kimiModel
+              );
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              console.error('Kimi 抽取失败:', message);
+              show(`AI 整理失败，已回退到规则解析: ${message}`, 'warning');
+            }
+          }
+        }
+
+        await parseAndSave(ocrText, result.path, false, aiCommodities);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error('截图识别失败:', message);

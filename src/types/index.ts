@@ -1,4 +1,4 @@
-﻿/** 商品记录 */
+/** 商品记录 */
 export interface CommodityRecord {
   id?: number;
   category: string;
@@ -61,6 +61,10 @@ export interface AppSettings {
   ocrProvider: 'local' | 'baidu';
   baiduApiKey: string;
   baiduSecretKey: string;
+  /** OCR 后是否调用 Kimi 开放平台整理文本 */
+  aiRefine: boolean;
+  kimiApiKey: string;
+  kimiModel: string;
   shortcut: string;
   currentServer: string;
   currentGame: string;

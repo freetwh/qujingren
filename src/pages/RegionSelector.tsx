@@ -38,6 +38,7 @@ export function RegionSelector() {
 
   // 加载截图与窗口快照（重置交互状态）
   const loadCapture = useCallback(() => {
+    setCapture(null); // 先清掉上次的截图，避免窗口显示时闪旧图
     startRef.current = null;
     setDragRect(null);
     setError('');

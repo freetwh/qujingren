@@ -1,4 +1,4 @@
-﻿use base64::Engine;
+use base64::Engine;
 use screenshots::Screen;
 use serde::Serialize;
 use std::fs;
@@ -144,6 +144,103 @@ async fn ocr_baidu(
                 .collect::<Vec<_>>()
                 .join("\n")
         })
+}
+
+/// Kimi（Moonshot）开放平台 chat 响应
+#[derive(serde::Deserialize)]
+struct KimiChatResponse {
+    choices: Option<Vec<KimiChatChoice>>,
+    error: Option<KimiError>,
+}
+
+#[derive(serde::Deserialize)]
+struct KimiChatChoice {
+    message: KimiChatMessage,
+}
+
+#[derive(serde::Deserialize)]
+struct KimiChatMessage {
+    content: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct KimiError {
+    message: Option<String>,
+}
+
+const KIMI_EXTRACT_SYSTEM_PROMPT: &str = "你是《梦幻西游》电脑版摆摊截图的 OCR 文本解析助手。\
+输入是 OCR 逐行识别出的原始文本，包含摊位卡片中的摊主、商品名、等级、单价、数量、总价等信息，可能有错字、漏字、截断或顺序混乱。\
+你的任务是把商品数据提取为 JSON，并利用你对《梦幻西游》物品名的知识修正 OCR 错误。\
+要求：\
+1. 修正或补全明显错误/残缺的商品名，必须以《梦幻西游》真实存在的物品名为准。\
+例如「水漫金U」→「水漫金山」、「泰山压」→「泰山压顶」、「魔碧要诀/魔兽要决」→「魔兽要诀」；\
+2. 「魔兽要诀」类必须细分为具体技能，名称输出为「魔兽要诀（技能名）」，例如「魔兽要诀（水漫金山）」；无法确定技能名的整条丢弃；\
+3. 宠物卡片中带「等级：N」的是宠物，level 填对应整数；普通商品 level 填 null；\
+4. price 取该商品对应的「单价」，为游戏内整数金币原值，不换算单位、不加千分位；价格无法与商品可靠配对的条目整条丢弃，绝不编造数字；\
+5. quantity 只有截图明确写出数量时才填，否则填 1；\
+6. seller 取「摊主：xxx」中的摊主名，没有摊主信息时填空字符串；\
+7. 只输出 JSON，不要解释、不要使用 Markdown 代码块。输出格式：\
+{\"seller\": \"摊主名\", \"items\": [{\"name\": \"商品名\", \"price\": 整数, \"quantity\": 1, \"level\": null}]}";
+
+/// Tauri 命令：调用 Kimi 开放平台，把 OCR 文本抽取为结构化商品 JSON。
+/// 请求放在原生端执行，避免 WebView 直接请求 api.moonshot.cn 被跨域策略拦截。
+/// 返回模型输出的原始文本，JSON 解析与字段校验由前端完成。
+#[tauri::command]
+async fn kimi_extract(ocr_text: String, api_key: String, model: String) -> Result<String, String> {
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        return Err("Kimi API Key 不能为空，请在设置页或 .env 中配置 VITE_KIMI_API_KEY".to_string());
+    }
+    if ocr_text.trim().is_empty() {
+        return Err("OCR 文本为空，无需提取".to_string());
+    }
+    let model = if model.trim().is_empty() {
+        "moonshot-v1-8k".to_string()
+    } else {
+        model.trim().to_string()
+    };
+
+    let body = serde_json::json!({
+        "model": model,
+        "temperature": 0.1,
+        "response_format": { "type": "json_object" },
+        "messages": [
+            { "role": "system", "content": KIMI_EXTRACT_SYSTEM_PROMPT },
+            { "role": "user", "content": ocr_text },
+        ],
+    });
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post("https://api.moonshot.cn/v1/chat/completions")
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Kimi 网络请求失败: {}", e))?;
+    let response_body = response_text(response, "Kimi").await?;
+    let result: KimiChatResponse = serde_json::from_str(&response_body)
+        .map_err(|e| format!("Kimi 返回格式错误: {}", e))?;
+
+    if let Some(error) = result.error {
+        return Err(format!(
+            "Kimi 调用失败：{}",
+            error.message.unwrap_or_else(|| "未知错误".to_string())
+        ));
+    }
+
+    result
+        .choices
+        .and_then(|mut choices| {
+            if choices.is_empty() {
+                None
+            } else {
+                choices.remove(0).message.content
+            }
+        })
+        .map(|content| content.trim().to_string())
+        .filter(|content| !content.is_empty())
+        .ok_or_else(|| "Kimi 返回内容为空".to_string())
 }
 
 /// 获取截图存储根目录
@@ -1045,6 +1142,7 @@ pub fn run() {
             register_shortcut,
             ocr_local,
             ocr_baidu,
+            kimi_extract,
             start_region_capture,
             get_pending_capture,
             finish_region_capture,

@@ -31,6 +31,9 @@ export function SettingsPage() {
   const envBaiduSecretKey =
     hasEnvironmentValue('VITE_BAIDU_OCR_SECRET_KEY') ||
     hasEnvironmentValue('VITE_BAIDU_SECRET_KEY');
+  const envAiRefine = hasEnvironmentValue('VITE_AI_REFINE');
+  const envKimiApiKey = hasEnvironmentValue('VITE_KIMI_API_KEY');
+  const envKimiModel = hasEnvironmentValue('VITE_KIMI_MODEL');
 
   useEffect(() => {
     setSettings(getSettings());
@@ -135,7 +138,7 @@ export function SettingsPage() {
             支持项目根目录的 <code>.env</code> / <code>.env.local</code>。环境变量会优先于本页保存的配置，修改后请重启开发服务。
           </p>
           <p className="rounded-lg border border-primary-500/20 bg-primary-600/10 px-3 py-2 text-xs leading-5 text-primary-300">
-            OCR 后按固定卡片规律解析，不调用大模型；商品记录仅保存在本机 IndexedDB，不会同步到远程。
+            OCR 后默认按固定卡片规律解析；可选开启下方「AI 整理」，由 Kimi 直接抽取商品数据并修正商品名（如「水漫金U→水漫金山」「泰山压→泰山压顶」）。商品记录仅保存在本机 IndexedDB，不会同步到远程。
           </p>
           {/* OCR 引擎选择 */}
           <div>
@@ -188,6 +191,74 @@ export function SettingsPage() {
             </>
           )}
 
+        </div>
+      </Card>
+
+      {/* AI 整理（Kimi 开放平台） */}
+      <Card title="AI 整理（Kimi 开放平台）">
+        <div className="space-y-4">
+          <p className="text-xs leading-5 text-text-muted">
+            开启后，Kimi 会直接从 OCR 文本抽取商品数据（名称、单价、数量、等级、摊主），并基于梦幻西游真实物品名修正 OCR 错字和残缺的商品名；抽取失败或无结果时自动回退到固定规则解析，不会丢失数据。Key 在{' '}
+            <code>platform.moonshot.cn</code> 创建，按 token 计费（每次抽取通常只需几百 token）。
+          </p>
+          <div>
+            <label className="block text-sm text-text-secondary mb-1.5">
+              AI 整理开关
+              {envAiRefine && <span className="ml-2 text-xs text-primary-400">环境变量</span>}
+            </label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => updateSetting('aiRefine', false)}
+                disabled={envAiRefine}
+                className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer ${
+                  !settings.aiRefine
+                    ? 'bg-primary-600 text-white neon-glow-sm'
+                    : 'bg-white/5 text-text-secondary hover:bg-white/10'
+                }`}
+              >
+                关闭（默认）
+              </button>
+              <button
+                onClick={() => updateSetting('aiRefine', true)}
+                disabled={envAiRefine}
+                className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer ${
+                  settings.aiRefine
+                    ? 'bg-primary-600 text-white neon-glow-sm'
+                    : 'bg-white/5 text-text-secondary hover:bg-white/10'
+                }`}
+              >
+                开启
+              </button>
+            </div>
+          </div>
+
+          {settings.aiRefine && (
+            <>
+              {renderKeyInput(
+                'Kimi API Key',
+                'kimiApiKey',
+                '输入 Kimi 开放平台 API Key（sk-...）',
+                envKimiApiKey
+              )}
+              <div>
+                <label className="block text-sm text-text-secondary mb-1.5">
+                  模型
+                  {envKimiModel && <span className="ml-2 text-xs text-primary-400">环境变量</span>}
+                </label>
+                <input
+                  type="text"
+                  value={settings.kimiModel}
+                  onChange={(e) => updateSetting('kimiModel', e.target.value)}
+                  placeholder="moonshot-v1-8k"
+                  disabled={envKimiModel}
+                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-text-primary placeholder-text-muted outline-none focus:border-primary-500 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                />
+                <p className="text-xs text-text-muted mt-1.5">
+                  整理短文本用 moonshot-v1-8k 即可；也可填 kimi-k2-0905-preview 等更新型号
+                </p>
+              </div>
+            </>
+          )}
         </div>
       </Card>
 

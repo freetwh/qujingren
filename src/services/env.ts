@@ -5,7 +5,10 @@ type EnvKey =
   | 'VITE_BAIDU_OCR_API_KEY'
   | 'VITE_BAIDU_API_KEY'
   | 'VITE_BAIDU_OCR_SECRET_KEY'
-  | 'VITE_BAIDU_SECRET_KEY';
+  | 'VITE_BAIDU_SECRET_KEY'
+  | 'VITE_AI_REFINE'
+  | 'VITE_KIMI_API_KEY'
+  | 'VITE_KIMI_MODEL';
 
 // 必须显式访问每个变量名。Vite 只会可靠地替换静态的 import.meta.env.VITE_* 访问。
 const RAW_ENV: Record<EnvKey, string | undefined> = {
@@ -14,6 +17,9 @@ const RAW_ENV: Record<EnvKey, string | undefined> = {
   VITE_BAIDU_API_KEY: import.meta.env.VITE_BAIDU_API_KEY,
   VITE_BAIDU_OCR_SECRET_KEY: import.meta.env.VITE_BAIDU_OCR_SECRET_KEY,
   VITE_BAIDU_SECRET_KEY: import.meta.env.VITE_BAIDU_SECRET_KEY,
+  VITE_AI_REFINE: import.meta.env.VITE_AI_REFINE,
+  VITE_KIMI_API_KEY: import.meta.env.VITE_KIMI_API_KEY,
+  VITE_KIMI_MODEL: import.meta.env.VITE_KIMI_MODEL,
 };
 
 function readEnv(...keys: EnvKey[]): string {
@@ -44,6 +50,15 @@ export function getEnvironmentSettings(): Partial<AppSettings> {
   );
   if (baiduApiKey) overrides.baiduApiKey = baiduApiKey;
   if (baiduSecretKey) overrides.baiduSecretKey = baiduSecretKey;
+
+  const aiRefine = readEnv('VITE_AI_REFINE');
+  if (aiRefine) {
+    overrides.aiRefine = ['1', 'true', 'on', 'yes'].includes(aiRefine.toLowerCase());
+  }
+  const kimiApiKey = readEnv('VITE_KIMI_API_KEY');
+  const kimiModel = readEnv('VITE_KIMI_MODEL');
+  if (kimiApiKey) overrides.kimiApiKey = kimiApiKey;
+  if (kimiModel) overrides.kimiModel = kimiModel;
 
   return overrides;
 }
