@@ -2,27 +2,43 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { Navbar } from './components/Navbar';
-import { Card } from './components/ui/Card';
+import { AccessGate } from './components/AccessGate';
 import { Dashboard } from './pages/Dashboard';
 import { SettingsPage } from './pages/SettingsPage';
 import { RegionSelector } from './pages/RegionSelector';
 import { DataWidget } from './pages/DataWidget';
 import { Toast, useToast } from './components/ui/Toast';
+import { SCREENSHOT_TIP } from './constants/tips';
 import { getSettings, saveSettings } from './services/settings';
 import { recognizeText, recognizeTextLocal } from './services/ocr';
 import { extractCommoditiesWithKimi } from './services/kimiExtract';
-import { parseCommoditiesByRules } from './services/ruleParser';
+import { isCommodityScreenshotText, parseCommoditiesByRules } from './services/ruleParser';
 import { toLocalDateString } from './services/date';
+import { formatServerSelection, hasCompleteServerSelection } from './services/serverCatalog';
+import { enqueueRemoteIngestion, startRemoteRetry } from './services/remoteSync';
 import {
   hideWidget,
   isWidgetVisible,
   pushWidgetRecords,
   syncWidgetRecords,
-  setWidgetRecognizing,
+  setWidgetRecognitionStatus,
   showWidget,
 } from './services/widget';
-import { addRecord, deleteRecord, deleteRecordsForScreenshot, getAllRecords, hasRecordsForScreenshot, renameRecords } from './db';
-import type { Server, ScreenshotResult, CaptureEvent, CommodityRecord, ParsedCommodity } from './types';
+import {
+  addRecord,
+  deleteRecord,
+  deleteRecordsForScreenshot,
+  getAllRecords,
+  hasRecordsForScreenshot,
+  renameRecords,
+} from './db';
+import type {
+  ScreenshotResult,
+  CaptureEvent,
+  CommodityRecord,
+  ParsedCommodity,
+  ServerSelection,
+} from './types';
 
 /** 顶层路由：框选覆盖层 / 悬浮挂件 / 主应用 */
 function App() {
@@ -34,16 +50,18 @@ function App() {
   if (overlay === 'widget') {
     return <DataWidget />;
   }
-  return <MainApp />;
+  return (
+    <AccessGate>
+      <MainApp />
+    </AccessGate>
+  );
 }
 
 function MainApp() {
   const [currentPage, setCurrentPage] = useState<'dashboard' | 'settings'>('dashboard');
   const initialSettings = getSettings();
-  const [servers, setServers] = useState<Server[]>(
-    initialSettings.servers && initialSettings.servers.length > 0
-      ? initialSettings.servers
-      : [{ id: '1', name: '默认区服', isDefault: true }]
+  const [serverSelection, setServerSelection] = useState<ServerSelection | undefined>(
+    initialSettings.serverSelection
   );
   const [capturing, setCapturing] = useState(false);
   const [lastOcrText, setLastOcrText] = useState('');
@@ -53,6 +71,9 @@ function MainApp() {
   const [widgetOn, setWidgetOn] = useState(false);
   const { toasts, show, remove } = useToast();
   const settingsRef = useRef(initialSettings);
+  const showRef = useRef(show);
+  const handleCaptureRef = useRef<() => Promise<void>>(async () => undefined);
+  showRef.current = show;
 
   // 初始化
   useEffect(() => {
@@ -61,12 +82,12 @@ function MainApp() {
 
     // 监听快捷键事件
     const unlistenShortcut = listen<CaptureEvent>('shortcut-capture', async () => {
-      await handleCapture();
+      await handleCaptureRef.current();
     });
 
     // 监听快捷键注册失败事件（热键被其他软件占用）
     const unlistenShortcutFailed = listen<CaptureEvent>('shortcut-register-failed', (event) => {
-      show(event.payload.message, 'error');
+      showRef.current(event.payload.message, 'error');
     });
 
     // 挂件删除行 / 设置页清空数据后，刷新主看板列表
@@ -74,16 +95,23 @@ function MainApp() {
       setDashboardVersion((version) => version + 1);
     });
 
+    const stopRemoteRetry = startRemoteRetry();
+
     return () => {
       unlistenShortcut.then((fn) => fn());
       unlistenShortcutFailed.then((fn) => fn());
       unlistenWidgetReload.then((fn) => fn());
+      stopRemoteRetry();
     };
   }, []);
 
   // 触发框选截图（快捷键或手动按钮）
   const handleCapture = useCallback(async () => {
     if (capturing) return;
+    if (!hasCompleteServerSelection(getSettings().serverSelection)) {
+      show('请先选择服类型和区服（时间服还需选择大区）', 'warning');
+      return;
+    }
     setCapturing(true);
 
     try {
@@ -97,6 +125,7 @@ function MainApp() {
       setCapturing(false);
     }
   }, [capturing, show]);
+  handleCaptureRef.current = handleCapture;
 
   const parseAndSave = useCallback(
     async (
@@ -105,6 +134,13 @@ function MainApp() {
       replaceExisting = false,
       aiCommodities?: ParsedCommodity[]
     ) => {
+      const settings = getSettings();
+      const selection = settings.serverSelection;
+      if (!hasCompleteServerSelection(selection)) {
+        show('区服为必填项，请先选择服类型和区服', 'warning');
+        return;
+      }
+
       // 优先用 Kimi 抽取的结构化商品；抽取失败或无结果时回退到固定规则解析
       let commodities = aiCommodities ?? [];
       if (commodities.length === 0) {
@@ -116,8 +152,8 @@ function MainApp() {
       console.log('[RULE] 解析结果:', commodities);
 
       if (commodities.length === 0) {
-        show('OCR 已完成，但没有匹配到完整的商品名和单价', 'warning');
-        return;
+        show(`OCR 已完成，但没有匹配到完整的商品名和单价。${SCREENSHOT_TIP}`, 'warning');
+        return false;
       }
 
       if (await hasRecordsForScreenshot(screenshotPath)) {
@@ -128,7 +164,6 @@ function MainApp() {
         await deleteRecordsForScreenshot(screenshotPath);
       }
 
-      const settings = getSettings();
       const today = toLocalDateString();
       const savedRecords: CommodityRecord[] = [];
 
@@ -140,7 +175,10 @@ function MainApp() {
           price: commodity.price,
           quantity: commodity.quantity,
           level: commodity.level ?? null,
-          server: settings.currentServer,
+          server: formatServerSelection(selection),
+          serverType: selection.typeId,
+          region: selection.regionName,
+          serverId: selection.serverId,
           date: today,
           screenshotPath,
           rawText: ocrText,
@@ -148,6 +186,13 @@ function MainApp() {
         savedRecords.push(await addRecord(payload));
       }
 
+      await enqueueRemoteIngestion({
+        game: settings.currentGame,
+        server: selection,
+        screenshotPath,
+        replaceExisting,
+        records: savedRecords,
+      });
       setDashboardVersion((version) => version + 1);
 
       // 最新记录排在最前，挂件按同样顺序插到顶部并高亮；
@@ -156,6 +201,8 @@ function MainApp() {
       getAllRecords()
         .then(syncWidgetRecords)
         .catch((err) => console.error('推送挂件全量数据失败:', err));
+
+      return true;
     },
     [show]
   );
@@ -168,7 +215,9 @@ function MainApp() {
       setLastOcrPath(result.path);
       show('截图成功，正在识别...', 'info');
       // 通知挂件进入「识别中」状态
-      setWidgetRecognizing(true).catch(console.error);
+      setWidgetRecognitionStatus('recognizing').catch(console.error);
+
+      let recognitionFailed = false;
 
       try {
         // OCR 识别：根据设置选择本地引擎或百度 API
@@ -177,7 +226,8 @@ function MainApp() {
           ocrText = await recognizeTextLocal(result.path);
         } else {
           if (!settings.baiduApiKey || !settings.baiduSecretKey) {
-            show('请先配置百度 OCR API Key', 'warning');
+            recognitionFailed = true;
+            show(`请先配置百度 OCR API Key。${SCREENSHOT_TIP}`, 'warning');
             return;
           }
           ocrText = await recognizeText(
@@ -192,7 +242,17 @@ function MainApp() {
         setLastOcrText(ocrText);
 
         if (!ocrText.trim()) {
-          show('OCR 未识别到文字', 'warning');
+          recognitionFailed = true;
+          show(`OCR 未识别到文字。${SCREENSHOT_TIP}`, 'warning');
+          return;
+        }
+
+        // 先用固定卡片规则确认这是商品界面，再决定是否调用 Kimi。
+        // 不符合格式的 OCR 文本不会消耗 AI token，也不会进入后续入库流程。
+        if (!isCommodityScreenshotText(ocrText)) {
+          console.warn('[OCR] 文本不符合商品界面卡片格式，已跳过 AI 整理和入库');
+          recognitionFailed = true;
+          show(`未识别到完整的商品名、单价和价格。${SCREENSHOT_TIP}`, 'warning');
           return;
         }
 
@@ -217,14 +277,15 @@ function MainApp() {
           }
         }
 
-        await parseAndSave(ocrText, result.path, false, aiCommodities);
+        const saved = await parseAndSave(ocrText, result.path, false, aiCommodities);
+        if (saved === false) recognitionFailed = true;
       } catch (err) {
+        recognitionFailed = true;
         const message = err instanceof Error ? err.message : String(err);
         console.error('截图识别失败:', message);
-        show(`识别失败: ${message}`, 'error');
+        show(`识别失败: ${message}。${SCREENSHOT_TIP}`, 'error');
       } finally {
-        // 无论成功失败都结束「识别中」状态
-        setWidgetRecognizing(false).catch(console.error);
+        setWidgetRecognitionStatus(recognitionFailed ? 'failed' : 'idle').catch(console.error);
       }
     },
     [parseAndSave, show]
@@ -287,9 +348,8 @@ function MainApp() {
     };
   }, [processScreenshot, show]);
 
-  // 挂件默认由 Rust 端在启动时预创建并直接显示（见 lib.rs setup）。
-  // 这里只读取真实可见性来同步主窗口开关，绝不主动 showWidget ——
-  // 否则会和预创建窗口叠加出「两个悬浮窗 / 关不掉」的现象。
+  // 挂件由 Rust 端预创建，并在邀请码门禁通过后显示。
+  // 这里只读取真实可见性来同步主窗口开关，避免重复创建窗口。
   useEffect(() => {
     isWidgetVisible()
       .then(setWidgetOn)
@@ -329,19 +389,21 @@ function MainApp() {
     });
 
     // 挂件通知主窗口重命名记录
-    const unlistenRename = listen<{ category: string; oldName: string; server: string; newName: string }>(
-      'widget-rename-record',
-      async (event) => {
-        try {
-          const { category, oldName, server, newName } = event.payload;
-          await renameRecords(category, oldName, server, newName);
-          const all = await getAllRecords();
-          await syncWidgetRecords(all);
-        } catch (err) {
-          console.error('主窗口重命名记录失败:', err);
-        }
+    const unlistenRename = listen<{
+      category: string;
+      oldName: string;
+      server: string;
+      newName: string;
+    }>('widget-rename-record', async (event) => {
+      try {
+        const { category, oldName, server, newName } = event.payload;
+        await renameRecords(category, oldName, server, newName);
+        const all = await getAllRecords();
+        await syncWidgetRecords(all);
+      } catch (err) {
+        console.error('主窗口重命名记录失败:', err);
       }
-    );
+    });
 
     return () => {
       unlistenVisibility.then((fn) => fn());
@@ -366,39 +428,13 @@ function MainApp() {
     }
   }, [widgetOn, show]);
 
-  // 区服管理：选择/新增/删除均持久化到设置，OCR 入库时按 currentServer 归属
-  const handleServerSelect = useCallback((name: string) => {
-    saveSettings({ currentServer: name });
+  const handleServerSelect = useCallback((selection?: ServerSelection) => {
+    setServerSelection(selection);
+    saveSettings({
+      serverSelection: selection,
+      currentServer: selection?.serverName ?? '',
+    });
     settingsRef.current = getSettings();
-  }, []);
-
-  const handleServerAdd = useCallback((name: string) => {
-    const newServer: Server = {
-      id: Date.now().toString(),
-      name,
-      isDefault: false,
-    };
-    setServers((prev) => {
-      const next = [...prev, newServer];
-      saveSettings({ servers: next, currentServer: name });
-      settingsRef.current = getSettings();
-      return next;
-    });
-  }, []);
-
-  const handleServerDelete = useCallback((id: string) => {
-    setServers((prev) => {
-      const target = prev.find((s) => s.id === id);
-      if (!target) return prev;
-      const next = prev.filter((s) => s.id !== id);
-      const fallback = next[0]?.name ?? '默认区服';
-      // 删掉的是当前区服时，回退到列表首个（或默认），保证 OCR 始终有归属
-      const current = settingsRef.current.currentServer;
-      const nextCurrent = current === target.name ? fallback : current;
-      saveSettings({ servers: next, currentServer: nextCurrent });
-      settingsRef.current = getSettings();
-      return next;
-    });
   }, []);
 
   return (
@@ -406,11 +442,8 @@ function MainApp() {
       <Navbar
         currentPage={currentPage}
         onNavigate={setCurrentPage}
-        servers={servers}
-        currentServer={settingsRef.current.currentServer}
+        serverSelection={serverSelection}
         onServerSelect={handleServerSelect}
-        onServerAdd={handleServerAdd}
-        onServerDelete={handleServerDelete}
         onManualCapture={handleCapture}
         capturing={capturing}
         shortcut={settingsRef.current.shortcut}
@@ -430,36 +463,16 @@ function MainApp() {
           </div>
         )}
         {currentPage === 'dashboard' ? (
-          <Dashboard key={dashboardVersion} />
+          <Dashboard
+            key={dashboardVersion}
+            lastOcrText={lastOcrText}
+            lastOcrPath={lastOcrPath}
+            ocrCopied={ocrCopied}
+            onReparseOcr={reparseLastOcrText}
+            onCopyOcr={copyOcrText}
+          />
         ) : (
           <SettingsPage />
-        )}
-
-        {lastOcrText && (
-          <Card title="最近一次 OCR 原文" className="max-w-4xl mx-auto mt-6">
-            <div className="flex items-center justify-between gap-3 mb-3">
-              <span className="text-xs text-text-muted truncate" title={lastOcrPath}>
-                图片：{lastOcrPath}
-              </span>
-              <div className="flex shrink-0 items-center gap-2">
-                <button
-                  onClick={reparseLastOcrText}
-                  className="px-3 py-1.5 rounded-lg bg-success/20 text-success text-xs hover:bg-success/30 transition-colors cursor-pointer"
-                >
-                  重新解析并入库
-                </button>
-                <button
-                  onClick={copyOcrText}
-                  className="px-3 py-1.5 rounded-lg bg-primary-600/80 text-white text-xs hover:bg-primary-500 transition-colors cursor-pointer"
-                >
-                  {ocrCopied ? '已复制' : '复制文字'}
-                </button>
-              </div>
-            </div>
-            <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-lg bg-black/20 p-4 text-sm leading-6 text-text-primary">
-              {lastOcrText}
-            </pre>
-          </Card>
         )}
       </main>
 

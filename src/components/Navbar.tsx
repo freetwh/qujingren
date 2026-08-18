@@ -1,15 +1,13 @@
-import { Camera, Settings, BarChart3, Keyboard, PanelTop } from 'lucide-react';
+import { Camera, Settings, BarChart3, Keyboard, PanelTop, CircleHelp } from 'lucide-react';
 import { ServerSelector } from './ServerSelector';
-import type { Server } from '../types';
+import { SCREENSHOT_TIP } from '../constants/tips';
+import type { ServerSelection } from '../types';
 
 interface NavbarProps {
   currentPage: 'dashboard' | 'settings';
   onNavigate: (page: 'dashboard' | 'settings') => void;
-  servers: Server[];
-  currentServer: string;
-  onServerSelect: (server: string) => void;
-  onServerAdd: (name: string) => void;
-  onServerDelete: (id: string) => void;
+  serverSelection?: ServerSelection;
+  onServerSelect: (selection?: ServerSelection) => void;
   onManualCapture: () => void;
   capturing: boolean;
   shortcut: string;
@@ -20,11 +18,8 @@ interface NavbarProps {
 export function Navbar({
   currentPage,
   onNavigate,
-  servers,
-  currentServer,
+  serverSelection,
   onServerSelect,
-  onServerAdd,
-  onServerDelete,
   onManualCapture,
   capturing,
   shortcut,
@@ -39,7 +34,7 @@ export function Navbar({
             <div className="w-8 h-8 rounded-lg bg-primary-600 flex items-center justify-center neon-glow-sm">
               <BarChart3 size={18} className="text-white" />
             </div>
-            <span className="text-base font-bold text-text-primary">梦幻西游商品库</span>
+            <span className="text-base font-bold text-text-primary">取经人</span>
           </div>
 
           <div className="flex items-center gap-1 ml-4">
@@ -64,17 +59,24 @@ export function Navbar({
               <Settings size={14} className="inline mr-1" />
               设置
             </button>
+            <span className="group relative flex items-center" title={SCREENSHOT_TIP}>
+              <CircleHelp
+                size={15}
+                aria-label="截图提示"
+                className="cursor-help text-text-muted transition-colors group-hover:text-primary-400"
+              />
+              <span
+                role="tooltip"
+                className="pointer-events-none absolute left-1/2 top-full z-50 mt-2 w-max max-w-72 -translate-x-1/2 rounded-lg border border-white/10 bg-background-100 px-3 py-2 text-xs leading-5 text-text-primary opacity-0 shadow-xl transition-opacity group-hover:opacity-100"
+              >
+                {SCREENSHOT_TIP}
+              </span>
+            </span>
           </div>
         </div>
 
         <div className="flex items-center gap-3">
-          <ServerSelector
-            servers={servers}
-            currentServer={currentServer}
-            onSelect={onServerSelect}
-            onAdd={onServerAdd}
-            onDelete={onServerDelete}
-          />
+          <ServerSelector selection={serverSelection} onSelect={onServerSelect} />
 
           <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-white/5 text-xs text-text-muted">
             <Keyboard size={12} />

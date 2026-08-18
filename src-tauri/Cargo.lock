@@ -94,6 +94,7 @@ dependencies = [
  "screenshots",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -102,6 +103,7 @@ dependencies = [
  "tauri-plugin-log",
  "tauri-plugin-notification",
  "windows 0.61.3",
+ "winreg",
 ]
 
 [[package]]

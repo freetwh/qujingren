@@ -2,11 +2,14 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import type { ParsedCommodity } from '../types';
+import { reconcileCommodityCategories } from './commodityCategory';
+import { parseCommoditiesByRules } from './ruleParser';
 
 const UNKNOWN_SELLER = '未知摊位';
 
 /** Kimi 返回的单个商品（字段宽松，入库前统一校验） */
 interface KimiExtractedItem {
+  category?: unknown;
   name?: unknown;
   price?: unknown;
   quantity?: unknown;
@@ -72,6 +75,7 @@ function toParsedCommodities(result: KimiExtractResult): ParsedCommodity[] {
 
     const quantity = toPositiveInt(raw.quantity) ?? 1;
     const level = toPositiveInt(raw.level);
+    const category = typeof raw.category === 'string' ? raw.category.trim() : '';
 
     if (level !== null || /^等级\d+/.test(name)) {
       // 宠物卡片：等级并入名称，与规则解析的「等级N 名字」格式一致
@@ -87,13 +91,16 @@ function toParsedCommodities(result: KimiExtractResult): ParsedCommodity[] {
       continue;
     }
 
-    if (/魔兽要[决诀]/.test(name)) {
-      // 期望格式「魔兽要诀（技能名）」；没有技能名的整条丢弃（同规则解析）
-      const subtypeMatch = /魔兽要[决诀][（(]([^）)]+)[）)]/.exec(name);
-      if (!subtypeMatch) continue;
+    const hasBeastSkillMarker = /魔[兽碧]要[决诀]/.test(name);
+    const hasBeastSkillCategory = /魔[兽碧]要[决诀]/.test(category);
+    if (hasBeastSkillMarker || hasBeastSkillCategory) {
+      // 优先读取复合名称；若模型正确返回了类别但偶尔漏掉外层，仍保住该类别。
+      const subtypeMatch = /魔[兽碧]要[决诀][（(]([^）)]+)[）)]/.exec(name);
+      const subtype = subtypeMatch?.[1] ?? (hasBeastSkillMarker ? null : name);
+      if (!subtype) continue;
       commodities.push({
         category: '魔兽要诀',
-        name: subtypeMatch[1],
+        name: subtype,
         seller,
         price,
         quantity,
@@ -136,5 +143,6 @@ export async function extractCommoditiesWithKimi(
     return [];
   }
 
-  return toParsedCommodities(parsed);
+  const commodities = toParsedCommodities(parsed);
+  return reconcileCommodityCategories(commodities, parseCommoditiesByRules(ocrText));
 }

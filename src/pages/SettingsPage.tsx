@@ -68,6 +68,9 @@ export function SettingsPage() {
     const updated = { ...settings, [key]: value };
     setSettings(updated);
     saveSettings({ [key]: value });
+    if (key === 'numberDisplayFormat') {
+      reloadWidget().catch((error) => console.error('刷新悬浮窗数字格式失败:', error));
+    }
   };
 
   const toggleShowKey = (key: string) => {
@@ -138,7 +141,7 @@ export function SettingsPage() {
             支持项目根目录的 <code>.env</code> / <code>.env.local</code>。环境变量会优先于本页保存的配置，修改后请重启开发服务。
           </p>
           <p className="rounded-lg border border-primary-500/20 bg-primary-600/10 px-3 py-2 text-xs leading-5 text-primary-300">
-            OCR 后默认按固定卡片规律解析；可选开启下方「AI 整理」，由 Kimi 直接抽取商品数据并修正商品名（如「水漫金U→水漫金山」「泰山压→泰山压顶」）。商品记录仅保存在本机 IndexedDB，不会同步到远程。
+            OCR 后默认按固定卡片规律解析；可选开启下方「AI 整理」，由 Kimi 直接抽取商品数据并修正商品名（如「水漫金U→水漫金山」「泰山压→泰山压顶」）。识别结果会用于商品数据统计。
           </p>
           {/* OCR 引擎选择 */}
           <div>
@@ -259,6 +262,40 @@ export function SettingsPage() {
               </div>
             </>
           )}
+        </div>
+      </Card>
+
+      {/* 数字展示 */}
+      <Card title="数字展示">
+        <div className="space-y-3">
+          <label className="block text-sm text-text-secondary">价格与均价</label>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => updateSetting('numberDisplayFormat', 'chinese-unit')}
+              className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer ${
+                settings.numberDisplayFormat === 'chinese-unit'
+                  ? 'bg-primary-600 text-white neon-glow-sm'
+                  : 'bg-white/5 text-text-secondary hover:bg-white/10'
+              }`}
+            >
+              中文单位（默认）
+            </button>
+            <button
+              type="button"
+              onClick={() => updateSetting('numberDisplayFormat', 'comma')}
+              className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer ${
+                settings.numberDisplayFormat === 'comma'
+                  ? 'bg-primary-600 text-white neon-glow-sm'
+                  : 'bg-white/5 text-text-secondary hover:bg-white/10'
+              }`}
+            >
+              逗号分隔
+            </button>
+          </div>
+          <p className="text-xs text-text-muted">
+            中文单位示例：1 亿 2345.68 万；逗号分隔示例：123,456,789。
+          </p>
         </div>
       </Card>
 

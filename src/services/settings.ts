@@ -10,8 +10,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   aiRefine: false,
   kimiApiKey: '',
   kimiModel: 'moonshot-v1-8k',
+  numberDisplayFormat: 'chinese-unit',
   shortcut: 'Ctrl+Shift+S',
-  currentServer: '默认区服',
+  currentServer: '',
   currentGame: '梦幻西游',
 };
 

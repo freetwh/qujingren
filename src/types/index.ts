@@ -9,13 +9,51 @@ export interface CommodityRecord {
   /** 宠物类商品的等级，普通商品为 null */
   level?: number | null;
   server: string;
+  /** 区服层级信息；旧版数据没有这些字段，因此保持可选。 */
+  serverType?: ServerTypeId;
+  region?: string;
+  serverId?: string;
   date: string;
   screenshotPath: string;
   rawText: string;
   createdAt: string;
 }
 
-/** 区服 */
+export type ServerTypeId = 'time' | 'free';
+
+export interface GameServer {
+  id: string;
+  name: string;
+}
+
+export interface ServerRegion {
+  id: string;
+  name: string;
+  servers: GameServer[];
+}
+
+export interface ServerType {
+  id: ServerTypeId;
+  name: string;
+  regions: ServerRegion[];
+}
+
+export interface ServerCatalog {
+  types: ServerType[];
+  source: string;
+  updatedAt: string;
+}
+
+export interface ServerSelection {
+  typeId: ServerTypeId;
+  typeName: string;
+  regionId: string;
+  regionName: string;
+  serverId: string;
+  serverName: string;
+}
+
+/** 旧版本中用户手工维护的区服，仅用于兼容已有设置。 */
 export interface Server {
   id: string;
   name: string;
@@ -65,8 +103,12 @@ export interface AppSettings {
   aiRefine: boolean;
   kimiApiKey: string;
   kimiModel: string;
+  /** 商品价格与均价的展示方式 */
+  numberDisplayFormat: 'chinese-unit' | 'comma';
   shortcut: string;
   currentServer: string;
+  /** 必填区服；时间服三级、畅玩服两级，存储层均保留完整 region 字段。 */
+  serverSelection?: ServerSelection;
   currentGame: string;
   /** 已添加的区服列表，持久化以便选择后跨重启保留 */
   servers?: Server[];

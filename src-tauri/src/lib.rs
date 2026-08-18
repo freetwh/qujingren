@@ -1,14 +1,50 @@
 use base64::Engine;
 use screenshots::Screen;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 /// 缓存屏幕列表（枚举显示器较慢，只需一次）
 static SCREENS: OnceLock<Vec<Screen>> = OnceLock::new();
+
+struct ClientAuthorization(AtomicBool);
+
+#[cfg(target_os = "windows")]
+fn platform_machine_id() -> Result<String, String> {
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
+    use winreg::RegKey;
+
+    let registry = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let key = registry
+        .open_subkey_with_flags(
+            "SOFTWARE\\Microsoft\\Cryptography",
+            KEY_READ | KEY_WOW64_64KEY,
+        )
+        .or_else(|_| registry.open_subkey_with_flags("SOFTWARE\\Microsoft\\Cryptography", KEY_READ))
+        .map_err(|e| format!("无法读取机器标识: {}", e))?;
+    key.get_value::<String, _>("MachineGuid")
+        .map_err(|e| format!("无法读取机器标识: {}", e))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn platform_machine_id() -> Result<String, String> {
+    Err("当前系统暂不支持机器绑定".to_string())
+}
+
+/// 只向前端提供带应用命名空间的哈希，不暴露 Windows MachineGuid 原值。
+#[tauri::command]
+fn get_machine_identity() -> Result<String, String> {
+    let raw = platform_machine_id()?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"mhxy-qujingren/device/v1:");
+    hasher.update(raw.trim().to_ascii_lowercase().as_bytes());
+    Ok(format!("{:x}", hasher.finalize()))
+}
 
 fn get_screens() -> Result<&'static Vec<Screen>, String> {
     if let Some(screens) = SCREENS.get() {
@@ -168,19 +204,22 @@ struct KimiError {
     message: Option<String>,
 }
 
-const KIMI_EXTRACT_SYSTEM_PROMPT: &str = "你是《梦幻西游》电脑版摆摊截图的 OCR 文本解析助手。\
-输入是 OCR 逐行识别出的原始文本，包含摊位卡片中的摊主、商品名、等级、单价、数量、总价等信息，可能有错字、漏字、截断或顺序混乱。\
-你的任务是把商品数据提取为 JSON，并利用你对《梦幻西游》物品名的知识修正 OCR 错误。\
-要求：\
-1. 修正或补全明显错误/残缺的商品名，必须以《梦幻西游》真实存在的物品名为准。\
-例如「水漫金U」→「水漫金山」、「泰山压」→「泰山压顶」、「魔碧要诀/魔兽要决」→「魔兽要诀」；\
-2. 「魔兽要诀」类必须细分为具体技能，名称输出为「魔兽要诀（技能名）」，例如「魔兽要诀（水漫金山）」；无法确定技能名的整条丢弃；\
-3. 宠物卡片中带「等级：N」的是宠物，level 填对应整数；普通商品 level 填 null；\
-4. price 取该商品对应的「单价」，为游戏内整数金币原值，不换算单位、不加千分位；价格无法与商品可靠配对的条目整条丢弃，绝不编造数字；\
-5. quantity 只有截图明确写出数量时才填，否则填 1；\
-6. seller 取「摊主：xxx」中的摊主名，没有摊主信息时填空字符串；\
-7. 只输出 JSON，不要解释、不要使用 Markdown 代码块。输出格式：\
-{\"seller\": \"摊主名\", \"items\": [{\"name\": \"商品名\", \"price\": 整数, \"quantity\": 1, \"level\": null}]}";
+const KIMI_EXTRACT_SYSTEM_PROMPT: &str = r#"你是《梦幻西游》电脑版摆摊截图的 OCR 文本解析助手。
+输入是 OCR 逐行识别出的原始文本，包含摊位卡片中的摊主、商品名、等级、单价、数量、总价等信息，可能有错字、漏字、截断或顺序混乱。
+你的任务是提取商品 JSON，并利用《梦幻西游》真实物品名修正明显的 OCR 错字或残缺。
+
+必须遵守以下分类与名称复合规则：
+1. 每条 item 都必须返回 category，且只能是「宠物」「魔兽要诀」「其他」之一。
+2. 魔兽要诀卡片的标题可能是「魔兽要诀」「高级魔兽要诀」或 OCR 误识别的「魔碧要诀」「魔兽要决」，图标附近的「高级慧根」「高级驱鬼」「奔雷咒」等文本是具体技能名。
+3. 兽诀必须返回 category="魔兽要诀"，name 必须返回完整复合格式「魔兽要诀（技能名）」。例如「高级慧根」必须返回「魔兽要诀（高级慧根）」，「奔雷咒」必须返回「魔兽要诀（奔雷咒）」。禁止只返回裸技能名；无法确定具体技能名时丢弃该条。
+4. 宠物卡片中带「等级：N」的是宠物：category="宠物"，level 填对应正整数。普通商品 level 填 null；除兽诀和宠物外，category="其他"。
+5. 修正或补全后的名称必须是游戏中真实存在的名称。例如「水漫金U」修正为「水漫金山」、「泰山压」修正为「泰山压顶」；不得编造物品或技能名。
+6. price 只取该商品明确对应的「单价」，保留游戏内整数金币原值，不换算单位、不加千分位。无法可靠配对商品和价格时丢弃该条，绝不编造数字。
+7. quantity 只有原文明确写出数量时才填写，否则填 1。seller 取「摊主：xxx」中的摊主名，没有摊主信息时填空字符串。
+8. 输出前检查：每条 item 都有 category；所有兽诀都使用「魔兽要诀（技能名）」；不得把兽诀技能归入「其他」。
+
+只输出合法 JSON，不要解释，不要使用 Markdown 代码块。输出格式：
+{"seller":"摊主名","items":[{"category":"魔兽要诀","name":"魔兽要诀（高级慧根）","price":1999999,"quantity":1,"level":null}]}"#;
 
 /// Tauri 命令：调用 Kimi 开放平台，把 OCR 文本抽取为结构化商品 JSON。
 /// 请求放在原生端执行，避免 WebView 直接请求 api.moonshot.cn 被跨域策略拦截。
@@ -462,7 +501,11 @@ fn get_foreground_window_rect(_scale: f64) -> Option<WindowRectInfo> {
 async fn start_region_capture(
     app: AppHandle,
     state: tauri::State<'_, PendingCapture>,
+    authorization: tauri::State<'_, ClientAuthorization>,
 ) -> Result<(), String> {
+    if !authorization.0.load(Ordering::Relaxed) {
+        return Err("客户端尚未激活".to_string());
+    }
     // 防重入：框选窗口可见说明会话进行中，忽略后续触发
     if let Some(w) = app.get_webview_window("region-selector") {
         if w.is_visible().unwrap_or(false) {
@@ -960,7 +1003,13 @@ fn build_widget_window(app: &AppHandle) -> Result<tauri::WebviewWindow, String> 
 
 /// Tauri 命令：显示悬浮挂件（不存在则创建）
 #[tauri::command]
-async fn show_widget(app: AppHandle) -> Result<(), String> {
+async fn show_widget(
+    app: AppHandle,
+    authorization: tauri::State<'_, ClientAuthorization>,
+) -> Result<(), String> {
+    if !authorization.0.load(Ordering::Relaxed) {
+        return Err("客户端尚未激活".to_string());
+    }
     let window = match app.get_webview_window(WIDGET_LABEL) {
         Some(w) => w,
         None => build_widget_window(&app)?,
@@ -971,6 +1020,25 @@ async fn show_widget(app: AppHandle) -> Result<(), String> {
     let _ = window.set_focus();
     // 同步可见性给主窗口，使开关状态始终与实际一致（避免「关不掉」的假象）
     let _ = app.emit_to("main", "widget-visibility", true);
+    Ok(())
+}
+
+/// 激活门禁通过后才开放挂件和原生截图入口。
+#[tauri::command]
+async fn set_client_authorized(
+    app: AppHandle,
+    authorization: tauri::State<'_, ClientAuthorization>,
+    authorized: bool,
+) -> Result<(), String> {
+    authorization.0.store(authorized, Ordering::Relaxed);
+    if let Some(window) = app.get_webview_window(WIDGET_LABEL) {
+        if authorized {
+            window.show().map_err(|e| format!("显示挂件失败: {}", e))?;
+        } else {
+            window.hide().map_err(|e| format!("隐藏挂件失败: {}", e))?;
+        }
+    }
+    let _ = app.emit_to("main", "widget-visibility", authorized);
     Ok(())
 }
 
@@ -1117,9 +1185,9 @@ async fn emit_widget_reload(app: AppHandle) -> Result<(), String> {
 
 /// Tauri 命令：通知挂件 OCR 识别状态切换
 #[tauri::command]
-async fn emit_widget_recognizing(app: AppHandle, recognizing: bool) -> Result<(), String> {
-    if let Err(e) = app.emit_to(WIDGET_LABEL, "widget-recognizing", recognizing) {
-        log::warn!("emit_widget_recognizing 失败: {}", e);
+async fn emit_widget_recognition_status(app: AppHandle, status: String) -> Result<(), String> {
+    if let Err(e) = app.emit_to(WIDGET_LABEL, "widget-recognition-status", status) {
+        log::warn!("emit_widget_recognition_status 失败: {}", e);
     }
     Ok(())
 }
@@ -1132,7 +1200,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(PendingCapture(Mutex::new(None)))
+        .manage(ClientAuthorization(AtomicBool::new(false)))
         .invoke_handler(tauri::generate_handler![
+            get_machine_identity,
+            set_client_authorized,
             capture_screenshot,
             get_screenshot_dir,
             open_screenshot_dir,
@@ -1158,7 +1229,7 @@ pub fn run() {
             push_widget_records,
             sync_widget_records,
             emit_widget_reload,
-            emit_widget_recognizing,
+            emit_widget_recognition_status,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -1192,22 +1263,9 @@ pub fn run() {
                 .build();
             }
 
-            // 预创建悬浮挂件窗口：默认开启（数据表只在挂件里看），
-            // 因此预创建后直接显示，主窗口启动不再额外 show，避免重复窗口。
-            // 若构建失败也不致命，用户仍可手动开启。
+            // 激活完成前挂件保持隐藏，避免绕过邀请码门禁使用客户端。
             match build_widget_window(app.handle()) {
-                Ok(window) => {
-                    // 预创建时已 visible(false)，这里直接显示即可；
-                    // 置顶状态交由挂件挂载时按配置（WidgetConfig.alwaysOnTop）统一设置，
-                    // 不在此抢设，避免与「默认不置顶」的预期冲突。
-                    if let Err(e) = window.show() {
-                        log::warn!("挂件窗口显示失败: {}", e);
-                    }
-                    // 同步可见性给主窗口，使其开关初始即为「开」
-                    if let Err(e) = app.emit_to("main", "widget-visibility", true) {
-                        log::warn!("同步挂件可见性失败: {}", e);
-                    }
-                }
+                Ok(_) => {}
                 Err(e) => log::warn!("挂件窗口预创建失败: {}", e),
             }
 

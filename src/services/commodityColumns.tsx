@@ -1,10 +1,9 @@
 ﻿import type { Column } from '../components/ui/Table';
 import { getCommodityKey } from './statistics';
+import { priceFormatter } from './numberFormat';
 import type { CommodityRecord, PeriodAverageMap } from '../types';
 
-export const priceFormatter = new Intl.NumberFormat('zh-CN', {
-  maximumFractionDigits: 2,
-});
+export { priceFormatter } from './numberFormat';
 
 /** 均价单元格：无样本显示占位符，有样本时把样本数作为角标 */
 function AverageCell({

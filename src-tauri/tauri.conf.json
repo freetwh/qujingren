@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "mhxy-commodity-db",
+  "productName": "取经人",
   "version": "0.1.0",
   "identifier": "com.mhxy.commodity-db",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "梦幻西游商品数据库",
+        "title": "取经人",
         "width": 1200,
         "height": 800,
         "minWidth": 900,

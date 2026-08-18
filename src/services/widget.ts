@@ -119,6 +119,8 @@ export const syncWidgetRecords = (records: CommodityRecord[]) =>
 export const reloadWidget = () =>
   invoke<void>('emit_widget_reload');
 
-/** OCR 识别状态广播：挂件标题栏据此显示「识别中」提示（经 Rust 定向推送） */
-export const setWidgetRecognizing = (recognizing: boolean) =>
-  invoke<void>('emit_widget_recognizing', { recognizing });
+export type WidgetRecognitionStatus = 'idle' | 'recognizing' | 'failed';
+
+/** OCR 识别状态广播：挂件标题栏据此显示识别进度或失败提示（经 Rust 定向推送） */
+export const setWidgetRecognitionStatus = (status: WidgetRecognitionStatus) =>
+  invoke<void>('emit_widget_recognition_status', { status });

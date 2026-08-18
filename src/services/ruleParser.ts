@@ -242,3 +242,14 @@ export function parseCommoditiesByRules(ocrText: string): ParsedCommodity[] {
     return commodity ? [commodity] : [];
   });
 }
+
+/**
+ * 判断 OCR 文本是否符合受支持的商品界面卡片结构。
+ *
+ * 复用正式解析规则作为 Kimi 调用前的本地门禁：只有商品（或宠物）数量与
+ * 明确的「单价 + 正整数价格」数量完整对应时才通过，避免把其他界面的杂乱
+ * OCR 文本发送给 AI 或写入商品库。
+ */
+export function isCommodityScreenshotText(ocrText: string): boolean {
+  return parseCommoditiesByRules(ocrText).length > 0;
+}

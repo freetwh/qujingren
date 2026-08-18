@@ -8,7 +8,9 @@ type EnvKey =
   | 'VITE_BAIDU_SECRET_KEY'
   | 'VITE_AI_REFINE'
   | 'VITE_KIMI_API_KEY'
-  | 'VITE_KIMI_MODEL';
+  | 'VITE_KIMI_MODEL'
+  | 'VITE_REMOTE_API_URL'
+  | 'VITE_SUPABASE_URL';
 
 // 必须显式访问每个变量名。Vite 只会可靠地替换静态的 import.meta.env.VITE_* 访问。
 const RAW_ENV: Record<EnvKey, string | undefined> = {
@@ -20,6 +22,8 @@ const RAW_ENV: Record<EnvKey, string | undefined> = {
   VITE_AI_REFINE: import.meta.env.VITE_AI_REFINE,
   VITE_KIMI_API_KEY: import.meta.env.VITE_KIMI_API_KEY,
   VITE_KIMI_MODEL: import.meta.env.VITE_KIMI_MODEL,
+  VITE_REMOTE_API_URL: import.meta.env.VITE_REMOTE_API_URL,
+  VITE_SUPABASE_URL: import.meta.env.VITE_SUPABASE_URL,
 };
 
 function readEnv(...keys: EnvKey[]): string {
@@ -44,10 +48,7 @@ export function getEnvironmentSettings(): Partial<AppSettings> {
   }
 
   const baiduApiKey = readEnv('VITE_BAIDU_OCR_API_KEY', 'VITE_BAIDU_API_KEY');
-  const baiduSecretKey = readEnv(
-    'VITE_BAIDU_OCR_SECRET_KEY',
-    'VITE_BAIDU_SECRET_KEY'
-  );
+  const baiduSecretKey = readEnv('VITE_BAIDU_OCR_SECRET_KEY', 'VITE_BAIDU_SECRET_KEY');
   if (baiduApiKey) overrides.baiduApiKey = baiduApiKey;
   if (baiduSecretKey) overrides.baiduSecretKey = baiduSecretKey;
 
@@ -66,4 +67,12 @@ export function getEnvironmentSettings(): Partial<AppSettings> {
 /** 判断某个 API 是否由环境变量提供，供请求层选择环境变量里的附加配置。 */
 export function hasEnvironmentValue(key: EnvKey): boolean {
   return Boolean(readEnv(key));
+}
+
+export function getRemoteApiConfig() {
+  const explicitUrl = readEnv('VITE_REMOTE_API_URL').replace(/\/+$/, '');
+  const supabaseUrl = readEnv('VITE_SUPABASE_URL').replace(/\/+$/, '');
+  return {
+    url: explicitUrl || (supabaseUrl ? `${supabaseUrl}/functions/v1/commodity-api` : ''),
+  };
 }
