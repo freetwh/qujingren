@@ -182,59 +182,77 @@ async fn ocr_baidu(
         })
 }
 
-/// Kimi（Moonshot）开放平台 chat 响应
 #[derive(serde::Deserialize)]
-struct KimiChatResponse {
-    choices: Option<Vec<KimiChatChoice>>,
-    error: Option<KimiError>,
+struct AiChatResponse {
+    choices: Option<Vec<AiChatChoice>>,
+    error: Option<AiApiError>,
 }
 
 #[derive(serde::Deserialize)]
-struct KimiChatChoice {
-    message: KimiChatMessage,
+struct AiChatChoice {
+    message: AiChatMessage,
 }
 
 #[derive(serde::Deserialize)]
-struct KimiChatMessage {
+struct AiChatMessage {
     content: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
-struct KimiError {
+struct AiApiError {
     message: Option<String>,
 }
 
-const KIMI_EXTRACT_SYSTEM_PROMPT: &str = r#"你是《梦幻西游》电脑版摆摊截图的 OCR 文本解析助手。
-输入是 OCR 逐行识别出的原始文本，包含摊位卡片中的摊主、商品名、等级、单价、数量、总价等信息，可能有错字、漏字、截断或顺序混乱。
-你的任务是提取商品 JSON，并利用《梦幻西游》真实物品名修正明显的 OCR 错字或残缺。
+const AI_OPTIMIZE_SYSTEM_PROMPT: &str = r#"你是《梦幻西游》电脑版摆摊截图的 OCR 文本优化助手。
+输入是已经通过商品卡片格式校验的 OCR 原始文本。请提取商品数据，并利用游戏中的真实物品名修正明显的 OCR 错字或残缺。
 
-必须遵守以下分类与名称复合规则：
-1. 每条 item 都必须返回 category，且只能是「宠物」「魔兽要诀」「其他」之一。
-2. 魔兽要诀卡片的标题可能是「魔兽要诀」「高级魔兽要诀」或 OCR 误识别的「魔碧要诀」「魔兽要决」，图标附近的「高级慧根」「高级驱鬼」「奔雷咒」等文本是具体技能名。
-3. 兽诀必须返回 category="魔兽要诀"，name 必须返回完整复合格式「魔兽要诀（技能名）」。例如「高级慧根」必须返回「魔兽要诀（高级慧根）」，「奔雷咒」必须返回「魔兽要诀（奔雷咒）」。禁止只返回裸技能名；无法确定具体技能名时丢弃该条。
-4. 宠物卡片中带「等级：N」的是宠物：category="宠物"，level 填对应正整数。普通商品 level 填 null；除兽诀和宠物外，category="其他"。
-5. 修正或补全后的名称必须是游戏中真实存在的名称。例如「水漫金U」修正为「水漫金山」、「泰山压」修正为「泰山压顶」；不得编造物品或技能名。
-6. price 只取该商品明确对应的「单价」，保留游戏内整数金币原值，不换算单位、不加千分位。无法可靠配对商品和价格时丢弃该条，绝不编造数字。
-7. quantity 只有原文明确写出数量时才填写，否则填 1。seller 取「摊主：xxx」中的摊主名，没有摊主信息时填空字符串。
-8. 输出前检查：每条 item 都有 category；所有兽诀都使用「魔兽要诀（技能名）」；不得把兽诀技能归入「其他」。
+必须遵守：
+1. 每条 item 的 category 只能是「宠物」「魔兽要诀」「其他」之一。
+2. 兽诀必须使用 category="魔兽要诀"，name 返回「魔兽要诀（技能名）」。无法确定具体技能名时丢弃该条。
+3. 宠物卡片中带「等级：N」的是宠物，level 填正整数；普通商品 level 填 null。
+4. price 只取明确对应的「单价」，保留游戏内整数原值。无法可靠配对名称和价格时丢弃，绝不编造数字。
+5. quantity 仅在原文明示时填写，否则填 1。seller 没有信息时填空字符串。
+6. 只修正真实存在的名称，不得编造商品、技能或价格。
 
-只输出合法 JSON，不要解释，不要使用 Markdown 代码块。输出格式：
+只输出合法 JSON，不要解释，不要使用 Markdown 代码块。格式：
 {"seller":"摊主名","items":[{"category":"魔兽要诀","name":"魔兽要诀（高级慧根）","price":1999999,"quantity":1,"level":null}]}"#;
 
-/// Tauri 命令：调用 Kimi 开放平台，把 OCR 文本抽取为结构化商品 JSON。
-/// 请求放在原生端执行，避免 WebView 直接请求 api.moonshot.cn 被跨域策略拦截。
-/// 返回模型输出的原始文本，JSON 解析与字段校验由前端完成。
+/// OCR 后的可选 AI 优化。供应商地址固定在原生端，API Key 只从本机设置随请求传入。
 #[tauri::command]
-async fn kimi_extract(ocr_text: String, api_key: String, model: String) -> Result<String, String> {
+async fn ai_optimize(
+    ocr_text: String,
+    api_key: String,
+    provider: String,
+    model: String,
+) -> Result<String, String> {
     let api_key = api_key.trim();
     if api_key.is_empty() {
-        return Err("Kimi API Key 不能为空，请在设置页或 .env 中配置 VITE_KIMI_API_KEY".to_string());
+        return Err("AI API Key 不能为空".to_string());
     }
     if ocr_text.trim().is_empty() {
-        return Err("OCR 文本为空，无需提取".to_string());
+        return Err("OCR 文本为空，无需优化".to_string());
     }
+
+    let (endpoint, service, default_model) = match provider.trim().to_ascii_lowercase().as_str() {
+        "kimi" => (
+            "https://api.moonshot.cn/v1/chat/completions",
+            "Kimi",
+            "moonshot-v1-8k",
+        ),
+        "deepseek" => (
+            "https://api.deepseek.com/chat/completions",
+            "DeepSeek",
+            "deepseek-chat",
+        ),
+        "qwen" => (
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            "Qwen",
+            "qwen-plus",
+        ),
+        _ => return Err("不支持的 AI 供应商".to_string()),
+    };
     let model = if model.trim().is_empty() {
-        "moonshot-v1-8k".to_string()
+        default_model.to_string()
     } else {
         model.trim().to_string()
     };
@@ -244,26 +262,26 @@ async fn kimi_extract(ocr_text: String, api_key: String, model: String) -> Resul
         "temperature": 0.1,
         "response_format": { "type": "json_object" },
         "messages": [
-            { "role": "system", "content": KIMI_EXTRACT_SYSTEM_PROMPT },
+            { "role": "system", "content": AI_OPTIMIZE_SYSTEM_PROMPT },
             { "role": "user", "content": ocr_text },
         ],
     });
 
-    let client = reqwest::Client::new();
-    let response = client
-        .post("https://api.moonshot.cn/v1/chat/completions")
+    let response = reqwest::Client::new()
+        .post(endpoint)
         .bearer_auth(api_key)
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Kimi 网络请求失败: {}", e))?;
-    let response_body = response_text(response, "Kimi").await?;
-    let result: KimiChatResponse = serde_json::from_str(&response_body)
-        .map_err(|e| format!("Kimi 返回格式错误: {}", e))?;
+        .map_err(|e| format!("{} 网络请求失败: {}", service, e))?;
+    let response_body = response_text(response, service).await?;
+    let result: AiChatResponse = serde_json::from_str(&response_body)
+        .map_err(|e| format!("{} 返回格式错误: {}", service, e))?;
 
     if let Some(error) = result.error {
         return Err(format!(
-            "Kimi 调用失败：{}",
+            "{} 调用失败：{}",
+            service,
             error.message.unwrap_or_else(|| "未知错误".to_string())
         ));
     }
@@ -279,7 +297,7 @@ async fn kimi_extract(ocr_text: String, api_key: String, model: String) -> Resul
         })
         .map(|content| content.trim().to_string())
         .filter(|content| !content.is_empty())
-        .ok_or_else(|| "Kimi 返回内容为空".to_string())
+        .ok_or_else(|| format!("{} 返回内容为空", service))
 }
 
 /// 获取截图存储根目录
@@ -1213,7 +1231,7 @@ pub fn run() {
             register_shortcut,
             ocr_local,
             ocr_baidu,
-            kimi_extract,
+            ai_optimize,
             start_region_capture,
             get_pending_capture,
             finish_region_capture,

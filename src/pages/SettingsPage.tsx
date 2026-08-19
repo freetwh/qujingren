@@ -11,11 +11,43 @@ import {
   EyeOff,
 } from 'lucide-react';
 import { Card } from '../components/ui/Card';
-import { hasEnvironmentValue } from '../services/env';
 import { getSettings, saveSettings } from '../services/settings';
 import { reloadWidget } from '../services/widget';
 import { clearAllData, exportAllData } from '../db';
-import type { AppSettings } from '../types';
+import type { AiProvider, AppSettings } from '../types';
+
+const AI_PROVIDER_SETTINGS = {
+  kimi: {
+    label: 'Kimi（默认）',
+    apiKey: 'kimiApiKey',
+    model: 'kimiModel',
+    keyPlaceholder: '输入 Kimi API Key（sk-...）',
+    modelPlaceholder: 'moonshot-v1-8k',
+  },
+  deepseek: {
+    label: 'DeepSeek',
+    apiKey: 'deepseekApiKey',
+    model: 'deepseekModel',
+    keyPlaceholder: '输入 DeepSeek API Key（sk-...）',
+    modelPlaceholder: 'deepseek-chat',
+  },
+  qwen: {
+    label: 'Qwen',
+    apiKey: 'qwenApiKey',
+    model: 'qwenModel',
+    keyPlaceholder: '输入阿里云百炼 API Key（sk-...）',
+    modelPlaceholder: 'qwen-plus',
+  },
+} as const satisfies Record<
+  AiProvider,
+  {
+    label: string;
+    apiKey: keyof AppSettings;
+    model: keyof AppSettings;
+    keyPlaceholder: string;
+    modelPlaceholder: string;
+  }
+>;
 
 export function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings>(getSettings());
@@ -25,15 +57,7 @@ export function SettingsPage() {
   const [copiedKey, setCopiedKey] = useState<string>('');
   const [openDirMsg, setOpenDirMsg] = useState<string>('');
 
-  const envOcrProvider = hasEnvironmentValue('VITE_OCR_PROVIDER');
-  const envBaiduApiKey =
-    hasEnvironmentValue('VITE_BAIDU_OCR_API_KEY') || hasEnvironmentValue('VITE_BAIDU_API_KEY');
-  const envBaiduSecretKey =
-    hasEnvironmentValue('VITE_BAIDU_OCR_SECRET_KEY') ||
-    hasEnvironmentValue('VITE_BAIDU_SECRET_KEY');
-  const envAiRefine = hasEnvironmentValue('VITE_AI_REFINE');
-  const envKimiApiKey = hasEnvironmentValue('VITE_KIMI_API_KEY');
-  const envKimiModel = hasEnvironmentValue('VITE_KIMI_MODEL');
+  const activeAiProvider = AI_PROVIDER_SETTINGS[settings.aiProvider];
 
   useEffect(() => {
     setSettings(getSettings());
@@ -138,10 +162,10 @@ export function SettingsPage() {
       <Card title="OCR 配置">
         <div className="space-y-4">
           <p className="text-xs leading-5 text-text-muted">
-            支持项目根目录的 <code>.env</code> / <code>.env.local</code>。环境变量会优先于本页保存的配置，修改后请重启开发服务。
+            OCR 是唯一识别方式；尽量把梦幻的分辨率调大，保证识图的准确率。开启下方「AI 优化」后，只会把通过商品截图格式校验的 OCR 文本发送给所选 AI 服务进行商品名纠错和结构化优化。
           </p>
           <p className="rounded-lg border border-primary-500/20 bg-primary-600/10 px-3 py-2 text-xs leading-5 text-primary-300">
-            OCR 后默认按固定卡片规律解析；可选开启下方「AI 整理」，由 Kimi 直接抽取商品数据并修正商品名（如「水漫金U→水漫金山」「泰山压→泰山压顶」）。识别结果会用于商品数据统计。
+            百度 OCR 密钥仅在本机设置中保存并在调用 OCR 时使用。
           </p>
           {/* OCR 引擎选择 */}
           <div>
@@ -149,25 +173,23 @@ export function SettingsPage() {
             <div className="flex gap-2">
               <button
                 onClick={() => updateSetting('ocrProvider', 'local')}
-                disabled={envOcrProvider}
                 className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer ${
                   settings.ocrProvider === 'local'
                     ? 'bg-primary-600 text-white neon-glow-sm'
                     : 'bg-white/5 text-text-secondary hover:bg-white/10'
                 }`}
               >
-                本地识别（推荐）
+                本地识别
               </button>
               <button
                 onClick={() => updateSetting('ocrProvider', 'baidu')}
-                disabled={envOcrProvider}
                 className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer ${
                   settings.ocrProvider === 'baidu'
                     ? 'bg-primary-600 text-white neon-glow-sm'
                     : 'bg-white/5 text-text-secondary hover:bg-white/10'
                 }`}
               >
-                百度 OCR API
+                百度 OCR API（推荐）
               </button>
             </div>
             <p className="text-xs text-text-muted mt-1.5">
@@ -182,14 +204,12 @@ export function SettingsPage() {
               {renderKeyInput(
                 '百度 OCR API Key',
                 'baiduApiKey',
-                '输入百度智能云 API Key',
-                envBaiduApiKey
+                '输入百度智能云 API Key'
               )}
               {renderKeyInput(
                 '百度 OCR Secret Key',
                 'baiduSecretKey',
-                '输入百度智能云 Secret Key',
-                envBaiduSecretKey
+                '输入百度智能云 Secret Key'
               )}
             </>
           )}
@@ -197,24 +217,24 @@ export function SettingsPage() {
         </div>
       </Card>
 
-      {/* AI 整理（Kimi 开放平台） */}
-      <Card title="AI 整理（Kimi 开放平台）">
+      {/* AI 优化 */}
+      <Card title="AI 优化">
         <div className="space-y-4">
           <p className="text-xs leading-5 text-text-muted">
-            开启后，Kimi 会直接从 OCR 文本抽取商品数据（名称、单价、数量、等级、摊主），并基于梦幻西游真实物品名修正 OCR 错字和残缺的商品名；抽取失败或无结果时自动回退到固定规则解析，不会丢失数据。Key 在{' '}
-            <code>platform.moonshot.cn</code> 创建，按 token 计费（每次抽取通常只需几百 token）。
+            默认使用 Kimi，也可选择 DeepSeek 或 Qwen。AI 调用失败或没有返回有效商品时，会自动回退到本地固定规则解析。
           </p>
+          <p className="rounded-lg border border-primary-500/20 bg-primary-600/10 px-3 py-2 text-xs leading-5 text-primary-300">
+            所有 AI API Key 均可在这里编辑并仅保存在本机，不从构建环境变量读取，也不会写入安装包。
+          </p>
+
           <div>
-            <label className="block text-sm text-text-secondary mb-1.5">
-              AI 整理开关
-              {envAiRefine && <span className="ml-2 text-xs text-primary-400">环境变量</span>}
-            </label>
+            <label className="block text-sm text-text-secondary mb-1.5">AI 优化开关</label>
             <div className="flex gap-2">
               <button
-                onClick={() => updateSetting('aiRefine', false)}
-                disabled={envAiRefine}
+                type="button"
+                onClick={() => updateSetting('aiOptimizationEnabled', false)}
                 className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer ${
-                  !settings.aiRefine
+                  !settings.aiOptimizationEnabled
                     ? 'bg-primary-600 text-white neon-glow-sm'
                     : 'bg-white/5 text-text-secondary hover:bg-white/10'
                 }`}
@@ -222,10 +242,10 @@ export function SettingsPage() {
                 关闭（默认）
               </button>
               <button
-                onClick={() => updateSetting('aiRefine', true)}
-                disabled={envAiRefine}
+                type="button"
+                onClick={() => updateSetting('aiOptimizationEnabled', true)}
                 className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer ${
-                  settings.aiRefine
+                  settings.aiOptimizationEnabled
                     ? 'bg-primary-600 text-white neon-glow-sm'
                     : 'bg-white/5 text-text-secondary hover:bg-white/10'
                 }`}
@@ -235,33 +255,42 @@ export function SettingsPage() {
             </div>
           </div>
 
-          {settings.aiRefine && (
-            <>
-              {renderKeyInput(
-                'Kimi API Key',
-                'kimiApiKey',
-                '输入 Kimi 开放平台 API Key（sk-...）',
-                envKimiApiKey
-              )}
-              <div>
-                <label className="block text-sm text-text-secondary mb-1.5">
-                  模型
-                  {envKimiModel && <span className="ml-2 text-xs text-primary-400">环境变量</span>}
-                </label>
-                <input
-                  type="text"
-                  value={settings.kimiModel}
-                  onChange={(e) => updateSetting('kimiModel', e.target.value)}
-                  placeholder="moonshot-v1-8k"
-                  disabled={envKimiModel}
-                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-text-primary placeholder-text-muted outline-none focus:border-primary-500 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
-                />
-                <p className="text-xs text-text-muted mt-1.5">
-                  整理短文本用 moonshot-v1-8k 即可；也可填 kimi-k2-0905-preview 等更新型号
-                </p>
-              </div>
-            </>
+          <div>
+            <label className="block text-sm text-text-secondary mb-1.5">AI 供应商</label>
+            <div className="grid grid-cols-3 gap-2">
+              {(Object.keys(AI_PROVIDER_SETTINGS) as AiProvider[]).map((provider) => (
+                <button
+                  key={provider}
+                  type="button"
+                  onClick={() => updateSetting('aiProvider', provider)}
+                  className={`px-3 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer ${
+                    settings.aiProvider === provider
+                      ? 'bg-primary-600 text-white neon-glow-sm'
+                      : 'bg-white/5 text-text-secondary hover:bg-white/10'
+                  }`}
+                >
+                  {AI_PROVIDER_SETTINGS[provider].label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {renderKeyInput(
+            `${activeAiProvider.label.replace('（默认）', '')} API Key`,
+            activeAiProvider.apiKey,
+            activeAiProvider.keyPlaceholder
           )}
+
+          <div>
+            <label className="block text-sm text-text-secondary mb-1.5">模型</label>
+            <input
+              type="text"
+              value={String(settings[activeAiProvider.model] || '')}
+              onChange={(e) => updateSetting(activeAiProvider.model, e.target.value)}
+              placeholder={activeAiProvider.modelPlaceholder}
+              className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-text-primary placeholder-text-muted outline-none focus:border-primary-500 transition-colors"
+            />
+          </div>
         </div>
       </Card>
 

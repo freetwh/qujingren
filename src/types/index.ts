@@ -95,14 +95,21 @@ export interface WidgetConfig {
 }
 
 /** 应用设置 */
+export type AiProvider = 'kimi' | 'deepseek' | 'qwen';
+
 export interface AppSettings {
   ocrProvider: 'local' | 'baidu';
   baiduApiKey: string;
   baiduSecretKey: string;
-  /** OCR 后是否调用 Kimi 开放平台整理文本 */
-  aiRefine: boolean;
+  /** OCR 后是否使用大模型优化商品名与结构化结果 */
+  aiOptimizationEnabled: boolean;
+  aiProvider: AiProvider;
   kimiApiKey: string;
   kimiModel: string;
+  deepseekApiKey: string;
+  deepseekModel: string;
+  qwenApiKey: string;
+  qwenModel: string;
   /** 商品价格与均价的展示方式 */
   numberDisplayFormat: 'chinese-unit' | 'comma';
   shortcut: string;

@@ -11,7 +11,11 @@ import { Toast, useToast } from './components/ui/Toast';
 import { SCREENSHOT_TIP } from './constants/tips';
 import { getSettings, saveSettings } from './services/settings';
 import { recognizeText, recognizeTextLocal } from './services/ocr';
-import { extractCommoditiesWithKimi } from './services/kimiExtract';
+import {
+  AI_PROVIDER_LABELS,
+  getAiProviderConfig,
+  optimizeCommoditiesWithAi,
+} from './services/aiOptimize';
 import { isCommodityScreenshotText, parseCommoditiesByRules } from './services/ruleParser';
 import { toLocalDateString } from './services/date';
 import { formatServerSelection, hasCompleteServerSelection } from './services/serverCatalog';
@@ -141,14 +145,10 @@ function MainApp() {
         return;
       }
 
-      // 优先用 Kimi 抽取的结构化商品；抽取失败或无结果时回退到固定规则解析
-      let commodities = aiCommodities ?? [];
-      if (commodities.length === 0) {
-        if (aiCommodities) {
-          console.log('[RULE] AI 抽取无结果，回退到固定规则解析');
-        }
-        commodities = parseCommoditiesByRules(ocrText);
-      }
+      const commodities =
+        aiCommodities && aiCommodities.length > 0
+          ? aiCommodities
+          : parseCommoditiesByRules(ocrText);
       console.log('[RULE] 解析结果:', commodities);
 
       if (commodities.length === 0) {
@@ -247,32 +247,36 @@ function MainApp() {
           return;
         }
 
-        // 先用固定卡片规则确认这是商品界面，再决定是否调用 Kimi。
-        // 不符合格式的 OCR 文本不会消耗 AI token，也不会进入后续入库流程。
+        // 先用固定卡片规则确认这是受支持的商品界面。
+        // 不符合格式的 OCR 文本不会发送给 AI，也不会进入后续入库流程。
         if (!isCommodityScreenshotText(ocrText)) {
-          console.warn('[OCR] 文本不符合商品界面卡片格式，已跳过 AI 整理和入库');
+          console.warn('[OCR] 文本不符合商品界面卡片格式，已跳过入库');
           recognitionFailed = true;
           show(`未识别到完整的商品名、单价和价格。${SCREENSHOT_TIP}`, 'warning');
           return;
         }
 
-        // 可选：Kimi 开放平台直接抽取结构化商品（含商品名纠错补全）。
-        // 抽取失败不阻断链路，自动回退到固定规则解析。
         let aiCommodities: ParsedCommodity[] | undefined;
-        if (settings.aiRefine) {
-          if (!settings.kimiApiKey) {
-            show('已开启 AI 整理但未配置 Kimi API Key，本次直接使用规则解析', 'warning');
+        if (settings.aiOptimizationEnabled) {
+          const { apiKey, model } = getAiProviderConfig(settings);
+          const providerLabel = AI_PROVIDER_LABELS[settings.aiProvider];
+          if (!apiKey.trim()) {
+            show(`已开启 AI 优化，但未配置 ${providerLabel} API Key，本次使用本地规则解析`, 'warning');
           } else {
             try {
-              aiCommodities = await extractCommoditiesWithKimi(
+              aiCommodities = await optimizeCommoditiesWithAi(
                 ocrText,
-                settings.kimiApiKey,
-                settings.kimiModel
+                apiKey,
+                settings.aiProvider,
+                model
               );
+              if (aiCommodities.length === 0) {
+                show(`${providerLabel} 没有返回有效商品，本次使用本地规则解析`, 'warning');
+              }
             } catch (err) {
               const message = err instanceof Error ? err.message : String(err);
-              console.error('Kimi 抽取失败:', message);
-              show(`AI 整理失败，已回退到规则解析: ${message}`, 'warning');
+              console.error(`${providerLabel} 优化失败:`, message);
+              show(`AI 优化失败，已回退到本地规则解析: ${message}`, 'warning');
             }
           }
         }

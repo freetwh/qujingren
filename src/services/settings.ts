@@ -4,12 +4,17 @@ import { getEnvironmentSettings } from './env';
 const SETTINGS_KEY = 'mhxy_commodity_settings';
 
 const DEFAULT_SETTINGS: AppSettings = {
-  ocrProvider: 'local',
+  ocrProvider: 'baidu',
   baiduApiKey: '',
   baiduSecretKey: '',
-  aiRefine: false,
+  aiOptimizationEnabled: false,
+  aiProvider: 'kimi',
   kimiApiKey: '',
   kimiModel: 'moonshot-v1-8k',
+  deepseekApiKey: '',
+  deepseekModel: 'deepseek-chat',
+  qwenApiKey: '',
+  qwenModel: 'qwen-plus',
   numberDisplayFormat: 'chinese-unit',
   shortcut: 'Ctrl+Shift+S',
   currentServer: '',
@@ -19,10 +24,20 @@ const DEFAULT_SETTINGS: AppSettings = {
 /** 获取设置 */
 export function getSettings(): AppSettings {
   const stored = localStorage.getItem(SETTINGS_KEY);
-  const saved = stored ? JSON.parse(stored) : {};
+  const parsed = stored ? JSON.parse(stored) : {};
+  const saved = parsed && typeof parsed === 'object' ? parsed : {};
 
-  // 环境变量优先，适合开发/部署时统一配置；设置页仍可作为本地兜底。
-  return { ...DEFAULT_SETTINGS, ...saved, ...getEnvironmentSettings() };
+  // 兼容旧版「AI 整理」开关；已有 Kimi Key/模型可直接沿用。
+  if ('aiRefine' in saved) {
+    if (!('aiOptimizationEnabled' in saved)) {
+      saved.aiOptimizationEnabled = Boolean(saved.aiRefine);
+    }
+    delete saved.aiRefine;
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved));
+  }
+
+  // 非敏感环境变量只提供初始值，设置页保存的选择优先；API 密钥只允许从本机设置读取。
+  return { ...DEFAULT_SETTINGS, ...getEnvironmentSettings(), ...saved };
 }
 
 /** 保存设置 */

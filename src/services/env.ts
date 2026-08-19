@@ -2,26 +2,12 @@ import type { AppSettings } from '../types';
 
 type EnvKey =
   | 'VITE_OCR_PROVIDER'
-  | 'VITE_BAIDU_OCR_API_KEY'
-  | 'VITE_BAIDU_API_KEY'
-  | 'VITE_BAIDU_OCR_SECRET_KEY'
-  | 'VITE_BAIDU_SECRET_KEY'
-  | 'VITE_AI_REFINE'
-  | 'VITE_KIMI_API_KEY'
-  | 'VITE_KIMI_MODEL'
   | 'VITE_REMOTE_API_URL'
   | 'VITE_SUPABASE_URL';
 
 // 必须显式访问每个变量名。Vite 只会可靠地替换静态的 import.meta.env.VITE_* 访问。
 const RAW_ENV: Record<EnvKey, string | undefined> = {
   VITE_OCR_PROVIDER: import.meta.env.VITE_OCR_PROVIDER,
-  VITE_BAIDU_OCR_API_KEY: import.meta.env.VITE_BAIDU_OCR_API_KEY,
-  VITE_BAIDU_API_KEY: import.meta.env.VITE_BAIDU_API_KEY,
-  VITE_BAIDU_OCR_SECRET_KEY: import.meta.env.VITE_BAIDU_OCR_SECRET_KEY,
-  VITE_BAIDU_SECRET_KEY: import.meta.env.VITE_BAIDU_SECRET_KEY,
-  VITE_AI_REFINE: import.meta.env.VITE_AI_REFINE,
-  VITE_KIMI_API_KEY: import.meta.env.VITE_KIMI_API_KEY,
-  VITE_KIMI_MODEL: import.meta.env.VITE_KIMI_MODEL,
   VITE_REMOTE_API_URL: import.meta.env.VITE_REMOTE_API_URL,
   VITE_SUPABASE_URL: import.meta.env.VITE_SUPABASE_URL,
 };
@@ -46,20 +32,6 @@ export function getEnvironmentSettings(): Partial<AppSettings> {
   if (envOcrProvider === 'local' || envOcrProvider === 'baidu') {
     overrides.ocrProvider = envOcrProvider;
   }
-
-  const baiduApiKey = readEnv('VITE_BAIDU_OCR_API_KEY', 'VITE_BAIDU_API_KEY');
-  const baiduSecretKey = readEnv('VITE_BAIDU_OCR_SECRET_KEY', 'VITE_BAIDU_SECRET_KEY');
-  if (baiduApiKey) overrides.baiduApiKey = baiduApiKey;
-  if (baiduSecretKey) overrides.baiduSecretKey = baiduSecretKey;
-
-  const aiRefine = readEnv('VITE_AI_REFINE');
-  if (aiRefine) {
-    overrides.aiRefine = ['1', 'true', 'on', 'yes'].includes(aiRefine.toLowerCase());
-  }
-  const kimiApiKey = readEnv('VITE_KIMI_API_KEY');
-  const kimiModel = readEnv('VITE_KIMI_MODEL');
-  if (kimiApiKey) overrides.kimiApiKey = kimiApiKey;
-  if (kimiModel) overrides.kimiModel = kimiModel;
 
   return overrides;
 }
