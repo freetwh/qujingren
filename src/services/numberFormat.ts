@@ -33,17 +33,18 @@ export function formatGameNumber(
     return `${sign}${plainFormatter.format(absolute)}`;
   }
 
-  // 先在“万”这一层四舍五入，避免 9999.999 万显示成 10000.00 万。
-  const roundedWan = Math.round((absolute / 10_000) * 100) / 100;
-  const yi = Math.floor(roundedWan / 10_000);
-  const wan = roundedWan - yi * 10_000;
+  // 中文单位只保留到百位游戏币，直接截取而不四舍五入，避免
+  // 199999 显示成 20.00 万、199999999 显示成 2 亿。
+  const truncatedWan = Math.trunc(absolute / 100) / 100;
+  const yi = Math.floor(truncatedWan / 10_000);
+  const wan = truncatedWan - yi * 10_000;
 
   if (yi > 0) {
     const yiText = `${sign}${plainFormatter.format(yi)} 亿`;
     return wan > 0 ? `${yiText} ${wan.toFixed(2)} 万` : yiText;
   }
 
-  return `${sign}${roundedWan.toFixed(2)} 万`;
+  return `${sign}${truncatedWan.toFixed(2)} 万`;
 }
 
 /** 保留原有 formatter 调用形式，让主窗口和悬浮窗继续共用同一入口。 */
