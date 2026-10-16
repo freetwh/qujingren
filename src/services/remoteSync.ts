@@ -1,5 +1,5 @@
 import type { CommodityRecord, ServerSelection } from '../types';
-import { getAccessHeaders } from './access';
+import { getDeviceHeaders } from './device';
 import { getRemoteApiConfig } from './env';
 
 const QUEUE_KEY = 'mhxy_remote_ingestion_queue_v1';
@@ -75,22 +75,17 @@ async function sendBatch(batch: RemoteBatch): Promise<SendResult> {
   const { url } = getRemoteApiConfig();
   if (!url) return { status: 'retry' };
 
-  let accessHeaders: Record<string, string>;
-  try {
-    accessHeaders = await getAccessHeaders();
-  } catch {
-    return { status: 'discard' };
-  }
+  const headers = {
+    'content-type': 'application/json',
+    ...(await getDeviceHeaders()),
+  };
 
   await waitForSendSlot();
 
   try {
     const response = await fetch(`${url}/ingestions`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...accessHeaders,
-      },
+      headers,
       body: JSON.stringify(batch),
     });
 

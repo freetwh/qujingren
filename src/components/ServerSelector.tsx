@@ -206,10 +206,10 @@ export function ServerSelector({ selection, onSelect }: ServerSelectorProps) {
 
               {selectedType && selectedRegion && (
                 <div className="w-48 shrink-0 pl-2">
-                  <div className="px-2.5 pb-1.5 pt-1 text-xs font-medium text-text-muted">小区</div>
+                  <div className="px-2.5 pb-1.5 pt-1 text-xs font-medium text-text-muted">服务器</div>
                   <div
                     role="listbox"
-                    aria-label="小区"
+                    aria-label="服务器"
                     className="widget-scroll max-h-80 space-y-0.5 overflow-y-auto pr-1"
                   >
                     {selectedRegion.servers.map((server) => (

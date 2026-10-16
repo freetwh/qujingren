@@ -4,15 +4,12 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 /// 缓存屏幕列表（枚举显示器较慢，只需一次）
 static SCREENS: OnceLock<Vec<Screen>> = OnceLock::new();
-
-struct ClientAuthorization(AtomicBool);
 
 #[cfg(target_os = "windows")]
 fn platform_machine_id() -> Result<String, String> {
@@ -519,11 +516,7 @@ fn get_foreground_window_rect(_scale: f64) -> Option<WindowRectInfo> {
 async fn start_region_capture(
     app: AppHandle,
     state: tauri::State<'_, PendingCapture>,
-    authorization: tauri::State<'_, ClientAuthorization>,
 ) -> Result<(), String> {
-    if !authorization.0.load(Ordering::Relaxed) {
-        return Err("客户端尚未激活".to_string());
-    }
     // 防重入：框选窗口可见说明会话进行中，忽略后续触发
     if let Some(w) = app.get_webview_window("region-selector") {
         if w.is_visible().unwrap_or(false) {
@@ -1021,13 +1014,7 @@ fn build_widget_window(app: &AppHandle) -> Result<tauri::WebviewWindow, String> 
 
 /// Tauri 命令：显示悬浮挂件（不存在则创建）
 #[tauri::command]
-async fn show_widget(
-    app: AppHandle,
-    authorization: tauri::State<'_, ClientAuthorization>,
-) -> Result<(), String> {
-    if !authorization.0.load(Ordering::Relaxed) {
-        return Err("客户端尚未激活".to_string());
-    }
+async fn show_widget(app: AppHandle) -> Result<(), String> {
     let window = match app.get_webview_window(WIDGET_LABEL) {
         Some(w) => w,
         None => build_widget_window(&app)?,
@@ -1038,25 +1025,6 @@ async fn show_widget(
     let _ = window.set_focus();
     // 同步可见性给主窗口，使开关状态始终与实际一致（避免「关不掉」的假象）
     let _ = app.emit_to("main", "widget-visibility", true);
-    Ok(())
-}
-
-/// 激活门禁通过后才开放挂件和原生截图入口。
-#[tauri::command]
-async fn set_client_authorized(
-    app: AppHandle,
-    authorization: tauri::State<'_, ClientAuthorization>,
-    authorized: bool,
-) -> Result<(), String> {
-    authorization.0.store(authorized, Ordering::Relaxed);
-    if let Some(window) = app.get_webview_window(WIDGET_LABEL) {
-        if authorized {
-            window.show().map_err(|e| format!("显示挂件失败: {}", e))?;
-        } else {
-            window.hide().map_err(|e| format!("隐藏挂件失败: {}", e))?;
-        }
-    }
-    let _ = app.emit_to("main", "widget-visibility", authorized);
     Ok(())
 }
 
@@ -1218,10 +1186,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(PendingCapture(Mutex::new(None)))
-        .manage(ClientAuthorization(AtomicBool::new(false)))
         .invoke_handler(tauri::generate_handler![
             get_machine_identity,
-            set_client_authorized,
             capture_screenshot,
             get_screenshot_dir,
             open_screenshot_dir,

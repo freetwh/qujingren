@@ -6,7 +6,7 @@ import type {
   ServerTypeId,
 } from '../types';
 import { SERVER_CATALOG_SNAPSHOT } from '../data/serverCatalogSnapshot';
-import { getAccessHeaders } from './access';
+import { getDeviceHeaders } from './device';
 import { getRemoteApiConfig } from './env';
 
 // v1 快照曾受 Windows 输出编码影响，换 key 可立即绕过已落盘的损坏缓存。
@@ -120,7 +120,7 @@ async function fetchOfficialCatalog(): Promise<ServerCatalog> {
       const serverCount = type.regions.reduce((count, region) => count + region.servers.length, 0);
       if (type.regions.length < source.minimumRegions || serverCount < source.minimumServers) {
         throw new Error(
-          `官方区服数据不完整：${type.regions.length} 个大区 / ${serverCount} 个小区`
+          `官方区服数据不完整：${type.regions.length} 个大区 / ${serverCount} 个服务器`
         );
       }
       return type;
@@ -160,7 +160,7 @@ export async function loadServerCatalog(): Promise<ServerCatalog> {
   if (url) {
     try {
       const response = await fetch(`${url}/servers`, {
-        headers: await getAccessHeaders(),
+        headers: await getDeviceHeaders(),
       });
       if (!response.ok) throw new Error(`区服接口返回 ${response.status}`);
       const catalog: unknown = await response.json();

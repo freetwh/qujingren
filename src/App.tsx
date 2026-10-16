@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { Navbar } from './components/Navbar';
-import { AccessGate } from './components/AccessGate';
 import { Dashboard } from './pages/Dashboard';
 import { SettingsPage } from './pages/SettingsPage';
 import { RegionSelector } from './pages/RegionSelector';
@@ -54,11 +53,7 @@ function App() {
   if (overlay === 'widget') {
     return <DataWidget />;
   }
-  return (
-    <AccessGate>
-      <MainApp />
-    </AccessGate>
-  );
+  return <MainApp />;
 }
 
 function MainApp() {
@@ -352,7 +347,7 @@ function MainApp() {
     };
   }, [processScreenshot, show]);
 
-  // 挂件由 Rust 端预创建，并在邀请码门禁通过后显示。
+  // 挂件由 Rust 端预创建，默认隐藏，由用户手动开关。
   // 这里只读取真实可见性来同步主窗口开关，避免重复创建窗口。
   useEffect(() => {
     isWidgetVisible()
